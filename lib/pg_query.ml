@@ -42,3 +42,17 @@ let parse query =
   match result.error with
   | None -> Ok result.parse_tree
   | Some { message; _ } -> Error message
+
+let%test _ = (raw_parse "SELECT * FROM users WHERE id = 1").error = None
+
+let%test _ = (raw_parse "SELECT * FROM users WHHERE id = 1").error <> None
+
+let%test _ =
+  match parse "INSERT INTO users (name, email) VALUES (?, ?) RETURNING id" with
+  | Ok _ -> true
+  | Error _ -> false
+
+let%test _ =
+  match parse "INSERT INTO users (name, email) VALUES ?, ? RETURNING id" with
+  | Error _ -> true
+  | Ok _ -> false

@@ -6,8 +6,9 @@
 (library
 (name pg_query)
 (public_name pg_query-ocaml)
+(inline_tests)
 (modes native)
 (libraries ctypes ctypes.foreign)
-(preprocess (pps ppx_deriving.show))
+(preprocess (pps ppx_deriving.show ppx_inline_test))
 (foreign_archives pg_query)
 )
