@@ -6,6 +6,7 @@
 (library
 (name pg_query)
 (public_name pg_query-ocaml)
+(modes native)
 (libraries ctypes ctypes.foreign)
 (preprocess (pps ppx_deriving.show))
 (foreign_archives pg_query)
