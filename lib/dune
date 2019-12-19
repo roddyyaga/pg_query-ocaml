@@ -1,0 +1,12 @@
+(rule
+(deps (source_tree libpg_query))
+(targets libpg_query.a)
+(action (copy libpg_query/libpg_query.a libpg_query.a)))
+
+(library
+(name pg_query)
+(public_name pg_query-ocaml)
+(libraries ctypes ctypes.foreign)
+(preprocess (pps ppx_deriving.show))
+(foreign_archives pg_query)
+)

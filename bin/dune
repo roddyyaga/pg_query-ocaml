@@ -1,0 +1,6 @@
+(executable
+(name pg_check)
+(public_name pg_check)
+(libraries core
+ctypes ctypes.foreign pg_query)
+(preprocess (pps ppx_jane)))
