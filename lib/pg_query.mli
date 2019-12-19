@@ -13,7 +13,7 @@ type parse_error = {
 (** Represents a syntax error in parsing some SQL.
 
 [message] and [cursorpos] are probably the most useful fields. Note that [filename], [funcname] and [lineno] refer to
-the location in the {i parsing code} that the error occured, not to the input sql. *)
+the location in the {i parsing code} that the error occured, not to the input SQL. *)
 
 type parse_result = {
   parse_tree : string;  (** The parse tree of the query, as JSON *)
