@@ -8,7 +8,7 @@ license: "MIT"
 homepage: "https://github.com/roddyyaga/pg_query-ocaml"
 doc: "https://roddyyaga.github.io/pg_query-ocaml/pg_query-ocaml/index.html"
 bug-reports: "https://github.com/roddyyaga/pg_query-ocaml/issues"
-depends: ["dune" "core" "ctypes" "ctypes.foreign" "ppx_deriving"]
+depends: ["dune" "core" "ctypes" "ctypes-foreign" "ppx_deriving"]
 build: [
   ["dune" "subst"] {pinned}
   [

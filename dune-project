@@ -14,7 +14,7 @@
 dune
 core
 ctypes
-ctypes.foreign
+ctypes-foreign
 ppx_deriving
 )
 )
