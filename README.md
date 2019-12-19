@@ -1,6 +1,7 @@
 # pg_query-ocaml
 
-Bindings for [pg_query](https://github.com/lfittl/libpg_query) for parsing PostgreSQL.
+Bindings for [pg_query](https://github.com/lfittl/libpg_query) for parsing PostgreSQL. Documentation is
+[here](https://roddyyaga.github.io/pg_query-ocaml/pg_query-ocaml/index.html).
 
 ## Usage
 
