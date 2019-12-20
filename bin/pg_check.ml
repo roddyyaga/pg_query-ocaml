@@ -31,4 +31,4 @@ let command =
       let%map_open files = anon (sequence ("filename" %: Filename.arg_type)) in
       fun () -> match files with [] -> do_parse [ "-" ] | _ -> do_parse files)
 
-let () = Command.run ~version:"1.0" ~build_info:"RWO" command
+let () = Command.run ~version:"0.9.4" ~build_info:"" command
