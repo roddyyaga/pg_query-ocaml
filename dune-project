@@ -11,7 +11,8 @@
 (name pg_query)
 (synopsis "Bindings for pg_query for parsing PostgreSQL")
 (depends
-dune
+(ocaml (>= 4.07))
+(dune (>= 2.0))
 core
 ctypes
 ctypes-foreign
