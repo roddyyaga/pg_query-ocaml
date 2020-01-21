@@ -9,7 +9,8 @@
 (generate_opam_files true)
 (package
 (name pg_query)
-(synopsis "Bindings for pg_query for parsing PostgreSQL")
+(synopsis "Bindings to libpg_query for parsing PostgreSQL")
+(description "OCaml bindings to libpg_query for parsing PostgreSQL, and a command-line tool that uses them")
 (depends
 (ocaml (>= 4.07))
 (dune (>= 2.0))
