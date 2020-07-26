@@ -30,7 +30,7 @@ CLEANLIBS = $(ARLIB)
 CLEANOBJS = $(OBJ_FILES)
 CLEANFILES = $(PGDIRBZ2)
 
-AR = ar rs
+AR := $(or $(AR),ar) rs
 RM = rm -f
 ECHO = echo
 
