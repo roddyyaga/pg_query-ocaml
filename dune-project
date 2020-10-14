@@ -28,7 +28,7 @@
    (>= 4.07))
   (dune
    (>= 2.0))
-  core
+  cmdliner
   ctypes
   ctypes-foreign
   ppx_deriving))
