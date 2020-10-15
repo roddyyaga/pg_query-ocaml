@@ -41,11 +41,19 @@ let info =
   let man = [
     `S Manpage.s_description;
     `P "Given a list of files, parses each of them as PostgreSQL and prints\n\
-        either the parsetree or an error message for each. Exits with code 0\n\
-        if all files were successfully parsed and with code 1 otherwise."
+        either the parsetree or an error message for each."
   ]
   in
-  Term.info "pg_check" ~version:"0.9.4" ~doc ~exits:Term.default_exits ~man
+  Term.info "pg_check" 
+    ~version:"0.9.4"
+    ~doc
+    ~exits:Term.[
+      exit_info 0 ~doc:"if all files were parsed successfully.";
+      exit_info 1 ~doc:"on parsing errors.";
+      exit_info 124 ~doc:"on command line parsing errors.";
+      exit_info 125 ~doc:"on unexpected internal errors.";
+    ]
+    ~man
 
 let files = 
   let doc = "A list of files to parse. If no files are provided, reads from stdin." in
