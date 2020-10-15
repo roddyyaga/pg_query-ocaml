@@ -2,11 +2,23 @@
 
 open Cmdliner
 
+let read_from_stdin () =
+  (* We use 65536 because that is the size of OCaml's IO buffers. *)
+  let chunk_size = 65536 in
+  let buffer = Buffer.create chunk_size in
+  let rec loop () =
+    Buffer.add_channel buffer stdin chunk_size;
+    loop ()
+  in
+  try loop () with
+  | End_of_file -> Buffer.contents buffer
+
 let get_contents = function
-  (* | "-" -> In_channel.input_all In_channel.stdin *)
+  | "-" -> read_from_stdin ()
   | filename ->
       let ic = open_in filename in
-      let contents = really_input_string ic (in_channel_length ic) in
+      let file_length = in_channel_length ic in
+      let contents = really_input_string ic file_length in
       close_in ic;
       contents
 
@@ -37,7 +49,7 @@ let info =
 
 let files = 
   let doc = "A list of files to parse. If no files are provided, reads from stdin." in
-  Arg.(non_empty & pos_all file [] & info [] ~docv:"FILE(S)" ~doc)
+  Arg.(value & pos_all non_dir_file ["-"] & info [] ~docv:"FILE(S)" ~doc)
 
 let cmd = Term.(const do_parse $ files)
 
