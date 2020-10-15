@@ -45,7 +45,7 @@ let info =
   ]
   in
   Term.info "pg_check" 
-    ~version:"0.9.4"
+    ~version:"0.9.6"
     ~doc
     ~exits:Term.[
       exit_info 0 ~doc:"if all files were parsed successfully.";

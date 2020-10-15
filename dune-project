@@ -2,7 +2,7 @@
 
 (name pg_query)
 
-(version 0.9.5)
+(version 0.9.6)
 
 (source
  (github roddyyaga/pg_query-ocaml))
