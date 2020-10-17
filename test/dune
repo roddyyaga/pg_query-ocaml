@@ -1,11 +1,3 @@
-(executable
- (name test)
- (libraries pg_query alcotest)
- (modules test))
-
-(rule
- (alias runtest)
- (package pg_query)
- (deps test.exe)
- (action
-  (run %{deps})))
+(tests
+ (names test)
+ (libraries alcotest pg_query))

@@ -32,4 +32,4 @@
   ctypes
   ctypes-foreign
   ppx_deriving
-  (alcotest :with_test)))
+  (alcotest :with-test)))
