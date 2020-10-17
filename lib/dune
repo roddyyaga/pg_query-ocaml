@@ -1,14 +1,16 @@
 (rule
-(deps (source_tree libpg_query))
-(targets libpg_query.a)
-(action (copy libpg_query/libpg_query.a libpg_query.a)))
+ (deps
+  (source_tree libpg_query))
+ (targets libpg_query.a)
+ (action
+  (copy libpg_query/libpg_query.a libpg_query.a)))
 
 (library
-(name pg_query)
-(public_name pg_query)
-(inline_tests)
-(modes native)
-(libraries ctypes ctypes.foreign)
-(preprocess (pps ppx_deriving.show ppx_inline_test))
-(foreign_archives pg_query)
-)
+ (name pg_query)
+ (public_name pg_query)
+ (inline_tests)
+ (modes native)
+ (libraries ctypes ctypes.foreign)
+ (preprocess
+  (pps ppx_deriving.show))
+ (foreign_archives pg_query))
