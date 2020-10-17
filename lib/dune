@@ -8,7 +8,6 @@
 (library
  (name pg_query)
  (public_name pg_query)
- (inline_tests)
  (modes native)
  (libraries ctypes ctypes.foreign)
  (preprocess
