@@ -31,4 +31,5 @@
   cmdliner
   ctypes
   ctypes-foreign
-  ppx_deriving))
+  ppx_deriving
+  (alcotest :with_test)))
