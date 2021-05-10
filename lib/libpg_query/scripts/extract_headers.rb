@@ -36,8 +36,8 @@ class Extractor
     lines = File.read(File.join(@pgdir, '/src/include/nodes/nodes.h'))
     lines.each_line do |line|
       if inside
-        if line[/([A-z_]+)(\s+=\s+\d+)?,/]
-          @nodetypes << $1[2..-1] # Without T_ prefix
+        if line[/T_([A-z_]+)(\s+=\s+\d+)?,/]
+          @nodetypes << $1
         elsif line == "} NodeTag;\n"
           inside = false
         end
@@ -48,7 +48,7 @@ class Extractor
   end
 
   IGNORE_LIST = [
-    'Node', 'NodeTag', 'varlena', 'IntArray', 'nameData', 'bool',
+    'Node', 'varlena', 'IntArray', 'nameData', 'bool',
     'sig_atomic_t', 'size_t', 'varatt_indirect',
   ]
 
@@ -63,7 +63,7 @@ class Extractor
 
     ['nodes/parsenodes', 'nodes/primnodes', 'nodes/lockoptions',
      'nodes/nodes', 'nodes/params', 'access/attnum', 'c', 'postgres', 'postgres_ext',
-     'storage/block', 'access/sdir'].each do |group|
+     'commands/vacuum', 'storage/block', 'access/sdir', 'mb/pg_wchar', '../backend/parser/gram'].each do |group|
       @target_group = group
       @struct_defs[@target_group] = {}
       @enum_defs[@target_group] = {}
@@ -75,13 +75,13 @@ class Extractor
           handle_struct(line)
         elsif !@current_enum_def.nil?
           handle_enum(line)
-        elsif line[/^typedef struct ([A-z]+)\s*(\/\*.+)?$/]
+        elsif line[/^(?:typedef )?struct ([A-z]+)\s*(\/\*.+)?$/]
           next if IGNORE_LIST.include?($1)
-          @current_struct_def = { fields: [], comment: @open_comment_text }
+          @current_struct_def = { name: $1, fields: [], comment: @open_comment_text }
           @open_comment_text = nil
-        elsif line[/^typedef enum( [A-z]+)?\s*(\/\*.+)?$/]
+        elsif line[/^\s*(?:typedef )?enum\s*([A-z]+)?\s*(\/\*.+)?(?: {)?$/]
           next if IGNORE_LIST.include?($1)
-          @current_enum_def = { values: [], comment: @open_comment_text }
+          @current_enum_def = { name: $1, values: [], comment: @open_comment_text }
           @open_comment_text = nil
         elsif line[/^typedef( struct)? ([A-z0-9\s_]+) \*?([A-z]+);/]
           next if IGNORE_LIST.include?($2) || IGNORE_LIST.include?($3)
@@ -108,8 +108,9 @@ class Extractor
       @current_struct_def[:fields] << { name: name, c_type: c_type, comment: comment }
 
       @open_comment = line.include?('/*') && !line.include?('*/')
-    elsif line[/^\}\s+([A-z]+);/]
-      @struct_defs[@target_group][$1] = @current_struct_def
+    elsif line[/^\}(\s+([A-z]+))?;/]
+      name = @current_struct_def.delete(:name)
+      @struct_defs[@target_group][name] = @current_struct_def
       @current_struct_def = nil
     elsif line.strip.start_with?('/*')
       @current_struct_def[:fields] << { comment: line }
@@ -124,18 +125,36 @@ class Extractor
   end
 
   def handle_enum(line)
-    if line[/^\s+([A-z0-9_]+),?\s*([A-z0-9_]+)?(\/\*.+)?/]
-      name = $1
-      other_name = $2
-      comment = $3
+    if line[/^\s+([A-z0-9_]+)(?: = (?:(\d+)(?: << (\d+))?|(PG_INT32_MAX)|(?:'(\w)')))?,?\s*((?:[A-z0-9_]+,?\s*)+)?(\/\*.+)?/]
+      primary_value = { name: $1 }
+      previous_line_values = @current_enum_def[:values].map {|v| v[:value] }.compact
+      primary_value[:value] = if $2
+                                ($3 ? ($2.to_i << $3.to_i) : $2.to_i)
+                              elsif $4 == 'PG_INT32_MAX'
+                                0x7FFFFFFF
+                              elsif $5
+                                $5.ord
+                              elsif previous_line_values.size > 0
+                                previous_line_values[-1] + 1
+                              else
+                                0
+                              end
+      primary_value[:comment] = $7 if $7
+      @current_enum_def[:values] << primary_value
 
-      @current_enum_def[:values] << { name: name, comment: comment }
-      @current_enum_def[:values] << { name: other_name } if other_name
+      if $6
+        $6.split(',').map(&:strip).each do |name|
+          secondary_value = { name: name }
+          secondary_value[:comment] = $7 if $7
+          @current_enum_def[:values] << secondary_value
+        end
+      end
 
       @open_comment = line.include?('/*') && !line.include?('*/')
-    elsif line[/^\}\s+([A-z]+);/]
-      @all_known_enums << $1
-      @enum_defs[@target_group][$1] = @current_enum_def
+    elsif line[/^\s*\}\s*([A-z]+)?;/]
+      name = @current_enum_def.delete(:name) || $1
+      @all_known_enums << name
+      @enum_defs[@target_group][name] = @current_enum_def
       @current_enum_def = nil
     elsif line.strip.start_with?('/*')
       @current_enum_def[:values] << { comment: line }
@@ -164,7 +183,6 @@ class Extractor
       'GrantStmt' => 'GrantTargetType',
       'RangeTblEntry' => 'RTEKind',
       'TransactionStmt' => 'TransactionStmtKind',
-      'VacuumStmt' => 'VacuumOption',
       'ViewStmt' => 'ViewCheckOption',
     },
     'nodes/primnodes' => {
@@ -232,6 +250,11 @@ class Extractor
     File.write('./srcdata/enum_defs.json', JSON.pretty_generate(@enum_defs))
     File.write('./srcdata/typedefs.json', JSON.pretty_generate(@typedefs))
   end
+end
+
+if !ARGV[0]
+  puts 'ERROR: You need to specify Postgres source directory as the first argument'
+  return
 end
 
 Extractor.new(ARGV[0]).extract!

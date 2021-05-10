@@ -21,13 +21,15 @@ int main() {
       printf(".");
     } else {
       ret_code = -1;
-      printf("INVALID result for \"%s\"\nexpected: %s\nactual: %s\n", tests[i], tests[i + 1], result.parse_tree);
+      printf("INVALID result for \"%s\"\nexpected: %s\n  actual:  %s\n", tests[i], tests[i + 1], result.parse_tree);
     }
 
     pg_query_free_parse_result(result);
   }
 
   printf("\n");
+
+  pg_query_exit();
 
   return ret_code;
 }

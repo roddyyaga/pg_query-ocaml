@@ -51,15 +51,15 @@ class Runner
     @include_files_to_output = []
     @unresolved = []
 
-    @blacklist = []
+    @blocklist = []
     @mock = {}
 
     @basepath = File.absolute_path(ARGV[0]) + '/'
     @out_path = File.absolute_path(ARGV[1]) + '/'
   end
 
-  def blacklist(symbol)
-    @blacklist << symbol
+  def blocklist(symbol)
+    @blocklist << symbol
   end
 
   def mock(symbol, code)
@@ -73,10 +73,11 @@ class Runner
     Dir.glob(@basepath + 'src/timezone/**/*.c') +
     Dir.glob(@basepath + 'src/pl/plpgsql/src/*.c') +
     Dir.glob(@basepath + 'contrib/pgcrypto/*.c') -
-    [ # Blacklist
+    [ # blocklist
       @basepath + 'src/backend/libpq/be-secure-openssl.c', # OpenSSL include error
       @basepath + 'src/backend/utils/adt/levenshtein.c', # Built through varlena.c
       @basepath + 'src/backend/utils/adt/like_match.c', # Built through like.c
+      @basepath + 'src/backend/utils/adt/jsonpath_scan.c', # Built through jsonpath.c
       @basepath + 'src/backend/utils/misc/guc-file.c', # Built through guc.c
       @basepath + 'src/backend/utils/sort/qsort_tuple.c', # Built through tuplesort.c
       @basepath + 'src/backend/bootstrap/bootscanner.c', # Built through bootparse.c
@@ -88,24 +89,32 @@ class Runner
       @basepath + 'src/backend/regex/regc_nfa.c', # Built through regcomp.c
       @basepath + 'src/backend/regex/rege_dfa.c', # Built through regexec.c
       @basepath + 'src/backend/replication/repl_scanner.c', # Built through repl_gram.c
-      @basepath + 'src/backend/replication/libpqwalreceiver/libpqwalreceiver.c',
-      @basepath + 'src/backend/replication/syncrep_scanner.c',
+      @basepath + 'src/backend/replication/libpqwalreceiver/libpqwalreceiver.c', # Dynamic module
+      @basepath + 'src/backend/replication/syncrep_scanner.c', # Built through syncrep.c
       @basepath + 'src/backend/port/posix_sema.c', # Linux only
       @basepath + 'src/common/fe_memutils.c', # This file is not expected to be compiled for backend code
       @basepath + 'src/common/restricted_token.c', # This file is not expected to be compiled for backend code
       @basepath + 'src/common/unicode/norm_test.c', # This file is not expected to be compiled for backend code
+      @basepath + 'src/backend/utils/mb/win866.c', # Win32 only
+      @basepath + 'src/backend/utils/mb/win1251.c', # Win32 only
+      @basepath + 'src/backend/utils/mb/iso.c', # Win32 only
       @basepath + 'src/port/dirent.c', # Win32 only
-      @basepath + 'src/port/getaddrinfo.c', # Win32 only
-      @basepath + 'src/port/getrusage.c', # Win32 only
-      @basepath + 'src/port/gettimeofday.c', # Win32 only
-      @basepath + 'src/port/strerror.c', # Win32 only
-      @basepath + 'src/port/strerror.c', # Win32 only
-      @basepath + 'src/port/strlcat.c', # Win32 only
-      @basepath + 'src/port/strlcpy.c', # Win32 only
-      @basepath + 'src/port/unsetenv.c', # Win32 only
       @basepath + 'src/port/win32error.c', # Win32 only
       @basepath + 'src/port/win32env.c', # Win32 only
-      @basepath + 'src/port/win32security.c' # Win32 only
+      @basepath + 'src/port/win32security.c', # Win32 only
+      @basepath + 'src/port/gettimeofday.c', # Win32 only
+      @basepath + 'src/port/strlcpy.c', # Not needed and conflicts with available function
+      @basepath + 'src/port/strlcat.c', # Not needed and conflicts with available function
+      @basepath + 'src/port/unsetenv.c', # Not needed and conflicts with available function
+      @basepath + 'src/port/getaddrinfo.c', # Not needed and conflicts with available function
+      @basepath + 'src/port/getrusage.c', # Not needed and conflicts with available function
+      @basepath + 'src/port/pg_crc32c_armv8.c', # Can't be parsed outside of ARMv8 compatible environments
+      @basepath + 'src/port/pg_crc32c_armv8_choose.c', # Can't be parsed outside of ARMv8 compatible environments
+      @basepath + 'src/backend/jit/llvm/llvmjit_expr.c', # Requires LLVM-C library (which we don't want to require)
+      @basepath + 'src/backend/jit/llvm/llvmjit_deform.c', # Requires LLVM-C library (which we don't want to require)
+      @basepath + 'src/backend/jit/llvm/llvmjit.c', # Requires LLVM-C library (which we don't want to require)
+      @basepath + 'src/backend/libpq/be-secure-gssapi.c', # Requires GSSAPI (which we don't want to require)
+      @basepath + 'src/common/protocol_openssl.c', # Requires OpenSSL (which we don't want to require)
     ] -
     Dir.glob(@basepath + 'src/backend/port/dynloader/*.c') -
     Dir.glob(@basepath + 'src/backend/port/win32/*.c') -
@@ -202,7 +211,7 @@ class Runner
 
   def analyze_file(file)
     index = FFI::Clang::Index.new(true, true)
-    translation_unit = index.parse_translation_unit(file, ['-I', @basepath + 'src/include', '-I', '/usr/local/opt/openssl/include', '-DDLSUFFIX=".bundle"', '-msse4.2', '-g'])
+    translation_unit = index.parse_translation_unit(file, ['-I', @basepath + 'src/include', '-I', '/usr/local/opt/openssl/include', '-I', `xcrun --sdk macosx --show-sdk-path`.strip + '/usr/include', '-DDLSUFFIX=".bundle"', '-msse4.2', '-g', '-DUSE_ASSERT_CHECKING'])
     cursor = translation_unit.cursor
 
     func_cursor = nil
@@ -235,7 +244,8 @@ class Runner
             end_offset += 1 if cursor.kind == :cursor_variable # The ";" isn't counted correctly by clang
 
             if cursor.kind == :cursor_variable && (cursor.linkage == :external || cursor.linkage == :internal) &&
-              !cursor.type.const_qualified? && !cursor.type.array_element_type.const_qualified?
+              !cursor.type.const_qualified? && !cursor.type.array_element_type.const_qualified? &&
+              cursor.type.pointee.kind != :type_function_proto
               analysis.external_variables << cursor.spelling
             end
 
@@ -266,8 +276,8 @@ class Runner
   RESOLVE_MAX_DEPTH = 100
 
   def deep_resolve(method_name, depth: 0, trail: [], global_resolved_by_parent: [], static_resolved_by_parent: [], static_base_filename: nil)
-    if @blacklist.include?(method_name)
-      puts 'ERROR: Hit blacklist entry ' + method_name
+    if @blocklist.include?(method_name)
+      puts 'ERROR: Hit blocklist entry ' + method_name
       puts 'Trail: ' + trail.inspect
       exit 1
     end
@@ -411,6 +421,8 @@ class Runner
       File.write(@out_path + out_name, str)
     end
 
+    #return
+
     @include_files_to_output.each do |include_file|
       next if special_include_file?(include_file)
 
@@ -434,20 +446,20 @@ end
 runner = Runner.new
 runner.run
 
-runner.blacklist('SearchSysCache')
-runner.blacklist('heap_open')
-runner.blacklist('relation_open')
-runner.blacklist('RelnameGetRelid')
-runner.blacklist('ProcessClientWriteInterrupt')
-runner.blacklist('typeStringToTypeName')
-runner.blacklist('LWLockAcquire')
-runner.blacklist('SPI_freeplan')
-runner.blacklist('get_ps_display')
-runner.blacklist('pq_beginmessage')
+runner.blocklist('SearchSysCache')
+runner.blocklist('heap_open')
+runner.blocklist('relation_open')
+runner.blocklist('RelnameGetRelid')
+runner.blocklist('ProcessClientWriteInterrupt')
+runner.blocklist('typeStringToTypeName')
+runner.blocklist('LWLockAcquire')
+runner.blocklist('SPI_freeplan')
+runner.blocklist('get_ps_display')
+runner.blocklist('pq_beginmessage')
 
 # Mocks REQUIRED for basic operations (error handling, memory management)
 runner.mock('ProcessInterrupts', 'void ProcessInterrupts(void) {}') # Required by errfinish
-runner.mock('PqCommMethods', 'PQcommMethods *PqCommMethods = NULL;') # Required by errfinish
+runner.mock('PqCommMethods', 'const PQcommMethods *PqCommMethods = NULL;') # Required by errfinish
 runner.mock('proc_exit', 'void proc_exit(int code) { printf("Terminating process due to FATAL error\n"); exit(1); }') # Required by errfinish (we use PG_TRY/PG_CATCH, so this should never be reached in practice)
 runner.mock('send_message_to_server_log', 'static void send_message_to_server_log(ErrorData *edata) {}')
 runner.mock('send_message_to_frontend', 'static void send_message_to_frontend(ErrorData *edata) {}')
@@ -455,7 +467,7 @@ runner.mock('send_message_to_frontend', 'static void send_message_to_frontend(Er
 # Mocks REQUIRED for PL/pgSQL parsing
 runner.mock('format_type_be', 'char * format_type_be(Oid type_oid) { return pstrdup("-"); }')
 runner.mock('build_row_from_class', 'static PLpgSQL_row *build_row_from_class(Oid classOid) { return NULL; }')
-runner.mock('plpgsql_build_datatype', 'PLpgSQL_type * plpgsql_build_datatype(Oid typeOid, int32 typmod, Oid collation) { PLpgSQL_type *typ; typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type)); typ->typname = pstrdup("UNKNOWN"); typ->ttype = PLPGSQL_TTYPE_SCALAR; return typ; }')
+runner.mock('plpgsql_build_datatype', 'PLpgSQL_type * plpgsql_build_datatype(Oid typeOid, int32 typmod, Oid collation, TypeName *origtypname) { PLpgSQL_type *typ; typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type)); typ->typname = pstrdup("UNKNOWN"); typ->ttype = PLPGSQL_TTYPE_SCALAR; return typ; }')
 runner.mock('parse_datatype', 'static PLpgSQL_type * parse_datatype(const char *string, int location) { PLpgSQL_type *typ; typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type)); typ->typname = pstrdup(string); typ->ttype = PLPGSQL_TTYPE_SCALAR; return typ; }')
 runner.mock('get_collation_oid', 'Oid get_collation_oid(List *name, bool missing_ok) { return -1; }')
 runner.mock('plpgsql_parse_wordtype', 'PLpgSQL_type * plpgsql_parse_wordtype(char *ident) { return NULL; }')
@@ -508,6 +520,7 @@ runner.deep_resolve('AllocSetContextCreate')
 runner.deep_resolve('MemoryContextSwitchTo')
 runner.deep_resolve('CurrentMemoryContext')
 runner.deep_resolve('MemoryContextDelete')
+runner.deep_resolve('AllocSetDeleteFreeList')
 runner.deep_resolve('palloc0')
 
 # Error handling needed to call parser
@@ -517,15 +530,19 @@ runner.deep_resolve('FlushErrorState')
 # Needed for output funcs
 runner.deep_resolve('bms_first_member')
 runner.deep_resolve('bms_free')
+runner.deep_resolve('bms_next_member')
+runner.deep_resolve('bms_num_members')
+runner.deep_resolve('makeBitString')
+
+# Needed for deparse
+runner.deep_resolve('pg_toupper')
 
 # Needed for normalize
 runner.deep_resolve('pg_qsort')
 runner.deep_resolve('raw_expression_tree_walker')
 
-# SHA1 needed for fingerprinting
-runner.deep_resolve('sha1_result')
-runner.deep_resolve('sha1_init')
-runner.deep_resolve('sha1_loop')
+# Other required functions
+runner.deep_resolve('pg_printf')
 
 runner.write_out
 

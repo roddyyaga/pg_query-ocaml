@@ -1,10 +1,10 @@
-# libpg_query [![Build Status](https://travis-ci.org/lfittl/libpg_query.svg?branch=master)](https://travis-ci.org/lfittl/libpg_query)
+# libpg_query
 
 C library for accessing the PostgreSQL parser outside of the server.
 
 This library uses the actual PostgreSQL server source to parse SQL queries and return the internal PostgreSQL parse tree.
 
-Note that this is mostly intended as a base library for [pg_query](https://github.com/lfittl/pg_query) (Ruby), [pg_query.go](https://github.com/lfittl/pg_query.go) (Go), [pg-query-parser](https://github.com/zhm/pg-query-parser) (Node), [psqlparse](https://github.com/alculquicondor/psqlparse) (Python) and [pglast](https://pypi.org/project/pglast/) (Python 3).
+Note that this is mostly intended as a base library for [pg_query](https://github.com/pganalyze/pg_query) (Ruby), [pg_query.go](https://github.com/pganalyze/pg_query_go) (Go), [pgsql-parser](https://github.com/pyramation/pgsql-parser) (Node), [psqlparse](https://github.com/alculquicondor/psqlparse) (Python) and [pglast](https://pypi.org/project/pglast/) (Python 3).
 
 You can find further background to why a query's parse tree is useful here: https://pganalyze.com/blog/parse-postgresql-queries-in-ruby.html
 
@@ -12,7 +12,7 @@ You can find further background to why a query's parse tree is useful here: http
 ## Installation
 
 ```sh
-git clone -b 10-latest git://github.com/lfittl/libpg_query
+git clone -b 13-latest git://github.com/pganalyze/libpg_query
 cd libpg_query
 make
 ```
@@ -24,7 +24,7 @@ For a production build, its best to use a specific git tag (see CHANGELOG).
 
 ## Usage: Parsing a query
 
-A [full example](https://github.com/lfittl/libpg_query/blob/master/examples/simple.c) that parses a query looks like this:
+A [full example](https://github.com/pganalyze/libpg_query/blob/master/examples/simple.c) that parses a query looks like this:
 
 ```c
 #include <pg_query.h>
@@ -47,12 +47,106 @@ Compile it like this:
 cc -Ilibpg_query -Llibpg_query example.c -lpg_query
 ```
 
-This will output:
+This will output the parse tree (whitespace adjusted here for better readability):
 
 ```json
-[{"SelectStmt": {"targetList": [{"ResTarget": {"val": {"A_Const": {"val": {"Integer": {"ival": 1}}, "location": 7}}, "location": 7}}], "op": 0}}]
+{
+    "version": 130002,
+    "stmts": [
+        {
+            "stmt": {
+                "SelectStmt": {
+                    "targetList": [
+                        {
+                            "ResTarget": {
+                                "val": {
+                                    "A_Const": {
+                                        "val": {
+                                            "Integer": {
+                                                "ival": 1
+                                            }
+                                        },
+                                        "location": 7
+                                    }
+                                },
+                                "location": 7
+                            }
+                        }
+                    ],
+                    "limitOption": "LIMIT_OPTION_DEFAULT",
+                    "op": "SETOP_NONE"
+                }
+            }
+        }
+    ]
+}
 ```
 
+## Usage: Scanning a query into its tokens using the PostgreSQL scanner/lexer
+
+pg_query also exposes the underlying scanner of Postgres, which is also used in
+the very first part in the parsing process. It can be useful on its own for e.g.
+syntax highlighting, where one is mostly concerned with differentiating keywords
+from identifiers and other parts of the query:
+
+```c
+#include <stdio.h>
+
+#include <pg_query.h>
+#include "protobuf/pg_query.pb-c.h"
+
+int main() {
+  PgQueryScanResult result;
+  PgQuery__ScanResult *scan_result;
+  PgQuery__ScanToken *scan_token;
+  const ProtobufCEnumValue *token_kind;
+  const ProtobufCEnumValue *keyword_kind;
+  const char *input = "SELECT update AS left /* comment */ FROM between";
+
+  result = pg_query_scan(input);
+  scan_result = pg_query__scan_result__unpack(NULL, result.pbuf.len, (void *) result.pbuf.data);
+
+  printf("  version: %d, tokens: %ld, size: %d\n", scan_result->version, scan_result->n_tokens, result.pbuf.len);
+  for (size_t j = 0; j < scan_result->n_tokens; j++) {
+    scan_token = scan_result->tokens[j];
+    token_kind = protobuf_c_enum_descriptor_get_value(&pg_query__token__descriptor, scan_token->token);
+    keyword_kind = protobuf_c_enum_descriptor_get_value(&pg_query__keyword_kind__descriptor, scan_token->keyword_kind);
+    printf("  \"%.*s\" = [ %d, %d, %s, %s ]\n", scan_token->end - scan_token->start, &(input[scan_token->start]), scan_token->start, scan_token->end, token_kind->name, keyword_kind->name);
+  }
+
+  pg_query__scan_result__free_unpacked(scan_result, NULL);
+  pg_query_free_scan_result(result);
+
+  return 0;
+}
+```
+
+This will output the following:
+
+```
+  version: 130002, tokens: 7, size: 77
+  "SELECT" = [ 0, 6, SELECT, RESERVED_KEYWORD ]
+  "update" = [ 7, 13, UPDATE, UNRESERVED_KEYWORD ]
+  "AS" = [ 14, 16, AS, RESERVED_KEYWORD ]
+  "left" = [ 17, 21, LEFT, TYPE_FUNC_NAME_KEYWORD ]
+  "/* comment */" = [ 22, 35, C_COMMENT, NO_KEYWORD ]
+  "FROM" = [ 36, 40, FROM, RESERVED_KEYWORD ]
+  "between" = [ 41, 48, BETWEEN, COL_NAME_KEYWORD ]
+```
+
+Where the each element in the token list has the following fields:
+
+1. Start location in the source string
+2. End location in the source string
+3. Token value - see Token type in `protobuf/pg_query.proto`
+4. Keyword type - see KeywordKind type in `protobuf/pg_query.proto`, possible values:
+  `NO_KEYWORD`: Not a keyword
+  `UNRESERVED_KEYWORD`: Unreserved keyword (available for use as any kind of unescaped name)
+  `COL_NAME_KEYWORD`: Unreserved keyword (can be unescaped column/table/etc names, cannot be unescaped function or type name)
+  `TYPE_FUNC_NAME_KEYWORD`: Reserved keyword (can be unescaped function or type name, cannot be unescaped column/table/etc names)
+  `RESERVED_KEYWORD`: Reserved keyword (cannot be unescaped column/table/variable/type/function names)
+
+Note that whitespace does not show as tokens.
 
 ## Usage: Fingerprinting a query
 
@@ -71,7 +165,7 @@ int main() {
 
   result = pg_query_fingerprint("SELECT 1");
 
-  printf("%s\n", result.hexdigest);
+  printf("%s\n", result.fingerprint_str);
 
   pg_query_free_fingerprint_result(result);
 }
@@ -80,14 +174,14 @@ int main() {
 This will output:
 
 ```
-8e1acac181c6d28f4a923392cf1c4eda49ee4cd2
+50fde20626009aba
 ```
 
-See https://github.com/lfittl/libpg_query/wiki/Fingerprinting for the full fingerprinting rules.
+See https://github.com/pganalyze/libpg_query/wiki/Fingerprinting for the full fingerprinting rules.
 
 ## Usage: Parsing a PL/pgSQL function (Experimental)
 
-A [full example](https://github.com/lfittl/libpg_query/blob/master/examples/simple_plpgsql.c) that parses a [PL/pgSQL](https://www.postgresql.org/docs/current/static/plpgsql.html) method looks like this:
+A [full example](https://github.com/pganalyze/libpg_query/blob/master/examples/simple_plpgsql.c) that parses a [PL/pgSQL](https://www.postgresql.org/docs/current/static/plpgsql.html) method looks like this:
 
 ```c
 #include <pg_query.h>
@@ -125,7 +219,7 @@ This will output:
 
 ```json
 [
-{"PLpgSQL_function": {"datums": [{"PLpgSQL_var": {"refname": "found", "datatype": {"PLpgSQL_type": {"typname": "UNKNOWN"}}}}], "action": {"PLpgSQL_stmt_block": {"lineno": 1, "body": [{"PLpgSQL_stmt_if": {"lineno": 1, "cond": {"PLpgSQL_expr": {"query": "SELECT v_version IS NULL"}}, "then_body": [{"PLpgSQL_stmt_return": {"lineno": 1, "expr": {"PLpgSQL_expr": {"query": "SELECT v_name"}}}}]}}, {"PLpgSQL_stmt_return": {"lineno": 1, "expr": {"PLpgSQL_expr": {"query": "SELECT v_name || '/' || v_version"}}}}]}}}}
+{"PLpgSQL_function":{"datums":[{"PLpgSQL_var":{"refname":"found","datatype":{"PLpgSQL_type":{"typname":"UNKNOWN"}}}}],"action":{"PLpgSQL_stmt_block":{"lineno":1,"body":[{"PLpgSQL_stmt_if":{"lineno":1,"cond":{"PLpgSQL_expr":{"query":"SELECT v_version IS NULL"}},"then_body":[{"PLpgSQL_stmt_return":{"lineno":1,"expr":{"PLpgSQL_expr":{"query":"SELECT v_name"}}}}]}},{"PLpgSQL_stmt_return":{"lineno":1,"expr":{"PLpgSQL_expr":{"query":"SELECT v_name || '/' || v_version"}}}}]}}}}
 ]
 ```
 
@@ -133,20 +227,28 @@ This will output:
 
 For stability, it is recommended you use individual tagged git versions, see CHANGELOG.
 
-`master` reflects a PostgreSQL base version of 9.4, with a legacy output format.
+Each major version is maintained in a dedicated git branch. Only the latest Postgres stable release receives active updates.
 
-New development is happening on `10-latest`, which reflects a base version of Postgres 10.
-
+| PostgreSQL Major Version | Branch     | Status              |
+|--------------------------|------------|---------------------|
+| 13                       | 13-latest  | Active development  |
+| 12                       | (n/a)      | Not supported       |
+| 11                       | (n/a)      | Not supported       |
+| 10                       | 10-latest  | Critical fixes only |
+| 9.6                      | (n/a)      | Not supported       |
+| 9.5                      | 9.5-latest | No longer supported |
+| 9.4                      | 9.4-latest | No longer supported |
 
 ## Resources
 
 pg_query wrappers in other languages:
 
-* Ruby: [pg_query](https://github.com/lfittl/pg_query)
-* Go: [pg_query_go](https://github.com/lfittl/pg_query_go)
-* Javascript (Node): [pg-query-parser](https://github.com/zhm/pg-query-parser)
-* Javascript (Browser): [pg-query-emscripten](https://github.com/lfittl/pg-query-emscripten)
+* Ruby: [pg_query](https://github.com/pganalyze/pg_query)
+* Go: [pg_query_go](https://github.com/pganalyze/pg_query_go)
+* Javascript (Node): [pgsql-parser](https://github.com/pyramation/pgsql-parser)
+* Javascript (Browser): [pg-query-emscripten](https://github.com/pganalyze/pg-query-emscripten)
 * Python: [psqlparse](https://github.com/alculquicondor/psqlparse), [pglast](https://github.com/lelit/pglast)
+* OCaml: [pg_query-ocaml](https://github.com/roddyyaga/pg_query-ocaml)
 
 Products, tools and libraries built on pg_query:
 
@@ -158,9 +260,9 @@ Products, tools and libraries built on pg_query:
 * [pgscope](https://github.com/gjalves/pgscope)
 * [pg_materialize](https://github.com/aanari/pg-materialize)
 * [DuckDB](https://github.com/cwida/duckdb) ([details](https://github.com/cwida/duckdb/tree/master/third_party/libpg_query))
+* and more
 
-
-Please feel free to [open a PR](https://github.com/lfittl/libpg_query/pull/new/master) to add yours! :)
+Please feel free to [open a PR](https://github.com/pganalyze/libpg_query/pull/new/master) to add yours! :)
 
 
 ## Authors
