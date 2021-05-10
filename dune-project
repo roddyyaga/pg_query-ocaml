@@ -2,13 +2,13 @@
 
 (name pg_query)
 
-(version 0.9.6)
+(version 0.9.7)
 
 (source
  (github roddyyaga/pg_query-ocaml))
 
 (documentation
-  "https://roddyyaga.github.io/pg_query-ocaml/pg_query-ocaml/index.html")
+ "https://roddyyaga.github.io/pg_query-ocaml/pg_query-ocaml/index.html")
 
 (license MIT)
 
@@ -22,7 +22,7 @@
  (name pg_query)
  (synopsis "Bindings to libpg_query for parsing PostgreSQL")
  (description
-   "OCaml bindings to libpg_query for parsing PostgreSQL, and a command-line tool that uses them")
+  "OCaml bindings to libpg_query for parsing PostgreSQL, and a command-line tool that uses them")
  (depends
   (ocaml
    (>= 4.07))
