@@ -51,7 +51,7 @@ This will output the parse tree (whitespace adjusted here for better readability
 
 ```json
 {
-    "version": 130002,
+    "version": 130008,
     "stmts": [
         {
             "stmt": {
@@ -124,7 +124,7 @@ int main() {
 This will output the following:
 
 ```
-  version: 130002, tokens: 7, size: 77
+  version: 130008, tokens: 7, size: 77
   "SELECT" = [ 0, 6, SELECT, RESERVED_KEYWORD ]
   "update" = [ 7, 13, UPDATE, UNRESERVED_KEYWORD ]
   "AS" = [ 14, 16, AS, RESERVED_KEYWORD ]
@@ -179,7 +179,7 @@ This will output:
 
 See https://github.com/pganalyze/libpg_query/wiki/Fingerprinting for the full fingerprinting rules.
 
-## Usage: Parsing a PL/pgSQL function (Experimental)
+## Usage: Parsing a PL/pgSQL function
 
 A [full example](https://github.com/pganalyze/libpg_query/blob/master/examples/simple_plpgsql.c) that parses a [PL/pgSQL](https://www.postgresql.org/docs/current/static/plpgsql.html) method looks like this:
 
@@ -249,6 +249,7 @@ pg_query wrappers in other languages:
 * Javascript (Browser): [pg-query-emscripten](https://github.com/pganalyze/pg-query-emscripten)
 * Python: [psqlparse](https://github.com/alculquicondor/psqlparse), [pglast](https://github.com/lelit/pglast)
 * OCaml: [pg_query-ocaml](https://github.com/roddyyaga/pg_query-ocaml)
+* Rust: [pg_query.rs](https://github.com/pganalyze/pg_query.rs)
 
 Products, tools and libraries built on pg_query:
 
@@ -260,6 +261,7 @@ Products, tools and libraries built on pg_query:
 * [pgscope](https://github.com/gjalves/pgscope)
 * [pg_materialize](https://github.com/aanari/pg-materialize)
 * [DuckDB](https://github.com/cwida/duckdb) ([details](https://github.com/cwida/duckdb/tree/master/third_party/libpg_query))
+* [pgspot](https://github.com/timescale/pgspot)
 * and more
 
 Please feel free to [open a PR](https://github.com/pganalyze/libpg_query/pull/new/master) to add yours! :)

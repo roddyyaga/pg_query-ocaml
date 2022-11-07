@@ -449,3 +449,87 @@ BEGIN
 	INSERT INTO list(key,date) VALUES(NEW.key,NEW.end);
 	RETURN NEW;
 END;$$;
+
+CREATE OR REPLACE FUNCTION test.test_parse (
+    p_time_start timestamptz,
+    p_time_end timestamptz,
+    p_time_interval interval default NULL
+) RETURNS TABLE (
+    ts timestamptz,
+    arbitrary_return bigint
+) AS $$
+BEGIN
+    -- some comment
+    -- some other comment
+
+    IF p_time_interval IS NULL
+        THEN p_time_interval := interval_from_start_end(p_time_start, p_time_end);
+    END IF;
+    RETURN QUERY
+    SELECT
+        bucket_function(p_time_interval, timestamp) AS ts,
+        arbitrary_return
+    FROM test.some_table
+    WHERE
+        start >= p_time_start
+        AND "end" < p_time_end
+    GROUP BY 1;
+END; $$ LANGUAGE plpgsql SECURITY DEFINER PARALLEL UNSAFE;
+
+CREATE FUNCTION public.somefunc(OUT _result uuid[])
+    RETURNS uuid[]
+    LANGUAGE 'plpgsql'
+
+AS $BODY$
+DECLARE
+	active_on_to_date uuid[];
+BEGIN
+_result := ARRAY( SELECT some_id FROM some_table);
+END;
+$BODY$;
+
+CREATE OR REPLACE FUNCTION cs_fmt_browser_version(v_name varchar, v_version varchar)
+RETURNS varchar AS $$
+DECLARE
+_a int;
+_v_name_alias ALIAS FOR $1;
+BEGIN
+IF v_version IS NULL THEN
+RETURN v_name;
+END IF;
+
+RETURN v_name || '/' || v_version;
+END; $$ LANGUAGE plpgsql;
+
+CREATE FUNCTION test(str character varying) RETURNS integer
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  v3 RECORD;
+  v4 integer;
+BEGIN
+  select 1 as c1, 2 as c2 into v3;
+  v3.c1 := 4;
+END;$$;
+
+CREATE FUNCTION test_assert() RETURNS integer
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  ASSERT true;
+  ASSERT now() < '2000-01-01';
+  ASSERT false, 'msg';
+  ASSERT false, version();
+
+  RETURN 1;
+END;$$;
+
+-- Example from https://www.postgresql.org/docs/current/sql-do.html
+DO $$DECLARE r record;
+BEGIN
+    FOR r IN SELECT table_schema, table_name FROM information_schema.tables
+             WHERE table_type = 'VIEW' AND table_schema = 'public'
+    LOOP
+        EXECUTE 'GRANT ALL ON ' || quote_ident(r.table_schema) || '.' || quote_ident(r.table_name) || ' TO webuser';
+    END LOOP;
+END$$;

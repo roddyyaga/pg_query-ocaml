@@ -1014,6 +1014,7 @@ _readAlterTableCmd(OUT_TYPE(AlterTableCmd, AlterTableCmd) msg)
   READ_NODE_PTR_FIELD(def, def, def);
   READ_ENUM_FIELD(DropBehavior, behavior, behavior, behavior);
   READ_BOOL_FIELD(missing_ok, missing_ok, missing_ok);
+  READ_BOOL_FIELD(recurse, recurse, recurse);
   return node;
 }
 
@@ -2674,6 +2675,7 @@ _readTableLikeClause(OUT_TYPE(TableLikeClause, TableLikeClause) msg)
   TableLikeClause *node = makeNode(TableLikeClause);
   READ_SPECIFIC_NODE_PTR_FIELD(RangeVar, range_var, relation, relation, relation);
   READ_UINT_FIELD(options, options, options);
+  READ_UINT_FIELD(relation_oid, relationOid, relationOid);
   return node;
 }
 

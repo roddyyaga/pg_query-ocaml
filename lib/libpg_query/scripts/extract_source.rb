@@ -113,6 +113,7 @@ class Runner
       @basepath + 'src/backend/jit/llvm/llvmjit_expr.c', # Requires LLVM-C library (which we don't want to require)
       @basepath + 'src/backend/jit/llvm/llvmjit_deform.c', # Requires LLVM-C library (which we don't want to require)
       @basepath + 'src/backend/jit/llvm/llvmjit.c', # Requires LLVM-C library (which we don't want to require)
+      @basepath + 'src/backend/libpq/be-gssapi-common.c', # Requires GSSAPI (which we don't want to require)
       @basepath + 'src/backend/libpq/be-secure-gssapi.c', # Requires GSSAPI (which we don't want to require)
       @basepath + 'src/common/protocol_openssl.c', # Requires OpenSSL (which we don't want to require)
     ] -
@@ -211,7 +212,15 @@ class Runner
 
   def analyze_file(file)
     index = FFI::Clang::Index.new(true, true)
-    translation_unit = index.parse_translation_unit(file, ['-I', @basepath + 'src/include', '-I', '/usr/local/opt/openssl/include', '-I', `xcrun --sdk macosx --show-sdk-path`.strip + '/usr/include', '-DDLSUFFIX=".bundle"', '-msse4.2', '-g', '-DUSE_ASSERT_CHECKING'])
+    translation_unit = index.parse_translation_unit(file, [
+      '-I', @basepath + 'src/include',
+      '-I', '/usr/local/opt/openssl/include',
+      '-I', `xcrun --sdk macosx --show-sdk-path`.strip + '/usr/include',
+      '-DDLSUFFIX=".bundle"',
+      '-msse4.2',
+      '-g',
+      '-DUSE_ASSERT_CHECKING'
+    ])
     cursor = translation_unit.cursor
 
     func_cursor = nil
@@ -253,10 +262,15 @@ class Runner
             analysis.file_to_symbol_positions[cursor.location.file][cursor.spelling] = [start_offset, end_offset]
 
             cursor.visit_children do |child_cursor, parent|
+              # There seems to be a bug here on modern Clang versions where the
+              # cursor kind gets modified once we call "child_cursor.definition"
+              # - thus we make a copy ahead of calling that, for later use
+              child_cursor_kind = child_cursor.kind
+
               # Ignore variable definitions from the local scope
               next :recurse if child_cursor.definition.semantic_parent == cursor
 
-              if child_cursor.kind == :cursor_decl_ref_expr || child_cursor.kind == :cursor_call_expr
+              if child_cursor_kind == :cursor_decl_ref_expr || child_cursor_kind == :cursor_call_expr
                 analysis.references[cursor.spelling] ||= []
                 (analysis.references[cursor.spelling] << child_cursor.spelling).uniq!
               end
@@ -468,7 +482,7 @@ runner.mock('send_message_to_frontend', 'static void send_message_to_frontend(Er
 runner.mock('format_type_be', 'char * format_type_be(Oid type_oid) { return pstrdup("-"); }')
 runner.mock('build_row_from_class', 'static PLpgSQL_row *build_row_from_class(Oid classOid) { return NULL; }')
 runner.mock('plpgsql_build_datatype', 'PLpgSQL_type * plpgsql_build_datatype(Oid typeOid, int32 typmod, Oid collation, TypeName *origtypname) { PLpgSQL_type *typ; typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type)); typ->typname = pstrdup("UNKNOWN"); typ->ttype = PLPGSQL_TTYPE_SCALAR; return typ; }')
-runner.mock('parse_datatype', 'static PLpgSQL_type * parse_datatype(const char *string, int location) { PLpgSQL_type *typ; typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type)); typ->typname = pstrdup(string); typ->ttype = PLPGSQL_TTYPE_SCALAR; return typ; }')
+runner.mock('parse_datatype', 'static PLpgSQL_type * parse_datatype(const char *string, int location) { PLpgSQL_type *typ; typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type)); typ->typname = pstrdup(string); typ->ttype = strcmp(string, "RECORD") == 0 ? PLPGSQL_TTYPE_REC : PLPGSQL_TTYPE_SCALAR; return typ; }')
 runner.mock('get_collation_oid', 'Oid get_collation_oid(List *name, bool missing_ok) { return -1; }')
 runner.mock('plpgsql_parse_wordtype', 'PLpgSQL_type * plpgsql_parse_wordtype(char *ident) { return NULL; }')
 runner.mock('plpgsql_parse_wordrowtype', 'PLpgSQL_type * plpgsql_parse_wordrowtype(char *ident) { return NULL; }')
@@ -540,6 +554,10 @@ runner.deep_resolve('pg_toupper')
 # Needed for normalize
 runner.deep_resolve('pg_qsort')
 runner.deep_resolve('raw_expression_tree_walker')
+
+# Needed to work with simplehash (in fingerprinting logic)
+runner.deep_resolve('hash_bytes')
+runner.deep_resolve('MemoryContextAllocExtended')
 
 # Other required functions
 runner.deep_resolve('pg_printf')

@@ -1,8 +1,8 @@
-(lang dune 2.0.1)
+(lang dune 2.0)
 
 (name pg_query)
 
-(version 0.9.7)
+(version 0.9.8)
 
 (source
  (github roddyyaga/pg_query-ocaml))
