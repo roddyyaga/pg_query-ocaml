@@ -368,6 +368,7 @@ static void trailing_pad(int padlen, PrintfTarget *target);
  * Note: glibc declares this as returning "char *", but that would require
  * casting away const internally, so we don't follow that detail.
  */
+
 #ifndef HAVE_STRCHRNUL
 
 static inline const char *

@@ -503,6 +503,9 @@
 
 /* Define to 1 if you have the `strchrnul' function. */
 /* #undef HAVE_STRCHRNUL */
+#ifdef __FreeBSD__
+#define HAVE_STRCHRNUL 1
+#endif
 
 /* Define to 1 if you have the `strerror_r' function. */
 #define HAVE_STRERROR_R 1
