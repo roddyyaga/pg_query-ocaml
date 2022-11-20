@@ -2,6 +2,85 @@
 
 All versions are tagged by the major Postgres version, plus an individual semver for this library itself.
 
+## 13-2.2.0   2022-11-02
+
+* Update to Postgres 13.8 patch release [#156](https://github.com/pganalyze/libpg_query/pull/156)
+* Backport Xcode 14.1 build fix from upcoming 13.9 release [#156](https://github.com/pganalyze/libpg_query/pull/156)
+* Fingerprinting version 3.1 [#155](https://github.com/pganalyze/libpg_query/pull/155)
+  - Fixes issue with "SELECT DISTINCT" having the same fingerprint as "SELECT"
+    (fingerprints for "SELECT DISTINCT" will change with this revision)
+  - Group additional DDL statements together that otherwise generate a lot of
+    unique fingerprints (ListenStmt, UnlistenStmt, NotifyStmt, CreateFunctionStmt,
+    FunctionParameter and DoStmt)
+* Normalize additional DDL statements [#155](https://github.com/pganalyze/libpg_query/pull/155)
+  - Normalizes arguments to CreateFunctionStmt, DoStmt,
+    CreateSubscriptionStmt, AlterSubscriptionStmt, CreateUserMapping and
+    AlterUserMapping.
+  - Note that this is different from pg_stat_statements itself, which does
+    not normalize utility statements at all today.
+
+
+## 13-2.1.2   2022-06-28
+
+* Add support for analyzing PL/pgSQL code inside DO blocks [#142](https://github.com/pganalyze/libpg_query/pull/142)
+* Fix memory leak in pg_query_fingerprint error handling [#141](https://github.com/pganalyze/libpg_query/pull/141)
+
+
+## 13-2.1.1   2022-05-03
+
+* PL/pgSQL parser
+  - Add support for Assert [#135](https://github.com/pganalyze/libpg_query/pull/135)
+  - Add support for SET, COMMIT, ROLLBACK and CALL [#130](https://github.com/pganalyze/libpg_query/pull/130)
+* Add support for parsing more operators that include a `?` character (special cased to support old pg_stat_statements query texts)
+  - ltree extension [#136](https://github.com/pganalyze/libpg_query/pull/136)
+  - promscale extension [#133](https://github.com/pganalyze/libpg_query/pull/133)
+* Deparser improvements
+  - Prefix errors with "deparse", and remove some asserts [#131](https://github.com/pganalyze/libpg_query/pull/131)
+  - Fix potential segfault when passing invalid protobuf (RawStmt without Stmt) [#128](https://github.com/pganalyze/libpg_query/pull/128)
+
+
+## 13-2.1.0   2021-10-12
+
+* Normalize: add funcname error object [#121](https://github.com/pganalyze/libpg_query/pull/121)
+* Normalize: Match GROUP BY against target list and re-use param refs [#124](https://github.com/pganalyze/libpg_query/pull/124)
+* PL/pgSQL: Setup namespace items for parameters, support RECORD types [#123](https://github.com/pganalyze/libpg_query/pull/123)
+  - This significantly improves parsing for PL/pgSQL functions, to the extent
+    that most functions should now parse successfully
+
+
+## 13-2.0.7   2021-07-16
+
+* Normalize: Don't modify constants in TypeName typmods/arrayBounds fields (#118)
+  - This matches how pg_stat_statement behaves, and avoids causing parsing
+    errors on the normalized statement
+* Don't fail builds on systems that have strchrnul support (FreeBSD)
+
+
+## 13-2.0.6   2021-06-29
+
+* Normalize: Don't touch "ORDER BY 1" expressions, keep original text [#115](https://github.com/pganalyze/libpg_query/pull/115)
+  - This avoids obscuring the semantic meaning of integers in the ORDER BY
+    clause, which is to reference a particular column in the target list.
+
+
+## 13-2.0.5   2021-06-24
+
+* Update to Postgres 13.3 patch release [#114](https://github.com/pganalyze/libpg_query/pull/114)
+* Add optional Makefile target to build as shared library [#100](https://github.com/pganalyze/libpg_query/pull/100)
+* Normalize: Don't touch "GROUP BY 1" type statements, keep original text [#113](https://github.com/pganalyze/libpg_query/pull/113)
+  -  This avoids obscuring the semantic meaning of integers in the GROUP BY
+    clause, which is to reference a particular column in the target list.
+* Fingerprint: Cache list item hashes to fingerprint complex queries faster [#112](https://github.com/pganalyze/libpg_query/pull/112)
+  - This was exhibiting quite bad runtime behaviour before, causing both an
+    explosion in memory, as well as very high CPU runtime for complex queries.
+  - The new approach ensures we don't calculate the hashes for a particular
+    list more than once, which ensures that we roughly have quadratic runtime
+    instead of exponential runtime.
+* Deparser: Emit the RangeVar catalogname if present [#105](https://github.com/pganalyze/libpg_query/pull/105)
+* Fix crash in pg_scan function when encountering backslash escapes [#109](https://github.com/pganalyze/libpg_query/pull/109)
+* Integrate oss-fuzz fuzzer [#106](https://github.com/pganalyze/libpg_query/pull/106)
+
+
 ## 13-2.0.4   2021-04-05
 
 * Deparser: Fix crash in CopyStmt with HEADER or FREEZE inside WITH parens

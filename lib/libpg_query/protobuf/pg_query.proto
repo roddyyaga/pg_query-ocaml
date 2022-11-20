@@ -945,6 +945,7 @@ message AlterTableCmd
   Node def = 5 [json_name="def"];
   DropBehavior behavior = 6 [json_name="behavior"];
   bool missing_ok = 7 [json_name="missing_ok"];
+  bool recurse = 8 [json_name="recurse"];
 }
 
 message AlterDomainStmt
@@ -2175,6 +2176,7 @@ message TableLikeClause
 {
   RangeVar relation = 1 [json_name="relation"];
   uint32 options = 2 [json_name="options"];
+  uint32 relation_oid = 3 [json_name="relationOid"];
 }
 
 message FunctionParameter
@@ -3012,6 +3014,7 @@ enum Token {
   ASCII_62 = 62; // ">"
   ASCII_63 = 63; // "?"
   ASCII_91 = 91; // "["
+  ASCII_92 = 92; // "\"
   ASCII_93 = 93; // "]"
   ASCII_94 = 94; // "^"
   // Named tokens in scan.l
@@ -3339,7 +3342,7 @@ enum Token {
   REASSIGN = 579;
   RECHECK = 580;
   RECURSIVE = 581;
-  REF = 582;
+  REF_P = 582;
   REFERENCES = 583;
   REFERENCING = 584;
   REFRESH = 585;

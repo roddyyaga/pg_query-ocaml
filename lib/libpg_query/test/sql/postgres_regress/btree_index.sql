@@ -151,25 +151,6 @@ insert into btree_tall_tbl select g, repeat('x', 250)
 from generate_series(1, 130) g;
 
 --
--- Test vacuum_cleanup_index_scale_factor
---
-
--- Simple create
-create table btree_test(a int);
-create index btree_idx1 on btree_test(a) with (vacuum_cleanup_index_scale_factor = 40.0);
-select reloptions from pg_class WHERE oid = 'btree_idx1'::regclass;
-
--- Fail while setting improper values
-create index btree_idx_err on btree_test(a) with (vacuum_cleanup_index_scale_factor = -10.0);
-create index btree_idx_err on btree_test(a) with (vacuum_cleanup_index_scale_factor = 100.0);
-create index btree_idx_err on btree_test(a) with (vacuum_cleanup_index_scale_factor = 'string');
-create index btree_idx_err on btree_test(a) with (vacuum_cleanup_index_scale_factor = true);
-
--- Simple ALTER INDEX
-alter index btree_idx1 set (vacuum_cleanup_index_scale_factor = 70.0);
-select reloptions from pg_class WHERE oid = 'btree_idx1'::regclass;
-
---
 -- Test for multilevel page deletion
 --
 CREATE TABLE delete_test_table (a bigint, b bigint, c bigint, d bigint);
@@ -191,3 +172,14 @@ INSERT INTO delete_test_table SELECT i, 1, 2, 3 FROM generate_series(1,1000) i;
 
 -- Test unsupported btree opclass parameters
 create index on btree_tall_tbl (id int4_ops(foo=1));
+
+-- Test case of ALTER INDEX with abuse of column names for indexes.
+-- This grammar is not officially supported, but the parser allows it.
+CREATE INDEX btree_tall_idx2 ON btree_tall_tbl (id);
+ALTER INDEX btree_tall_idx2 ALTER COLUMN id SET (n_distinct=100);
+DROP INDEX btree_tall_idx2;
+-- Partitioned index
+CREATE TABLE btree_part (id int4) PARTITION BY RANGE (id);
+CREATE INDEX btree_part_idx ON btree_part(id);
+ALTER INDEX btree_part_idx ALTER COLUMN id SET (n_distinct=100);
+DROP TABLE btree_part;

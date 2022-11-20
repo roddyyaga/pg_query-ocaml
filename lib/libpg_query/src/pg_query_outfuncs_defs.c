@@ -897,6 +897,7 @@ _outAlterTableCmd(OUT_TYPE(AlterTableCmd, AlterTableCmd) out, const AlterTableCm
   WRITE_NODE_PTR_FIELD(def, def, def);
   WRITE_ENUM_FIELD(DropBehavior, behavior, behavior, behavior);
   WRITE_BOOL_FIELD(missing_ok, missing_ok, missing_ok);
+  WRITE_BOOL_FIELD(recurse, recurse, recurse);
 }
 
 static void
@@ -2270,6 +2271,7 @@ _outTableLikeClause(OUT_TYPE(TableLikeClause, TableLikeClause) out, const TableL
 {
   WRITE_SPECIFIC_NODE_PTR_FIELD(RangeVar, range_var, relation, relation, relation);
   WRITE_UINT_FIELD(options, options, options);
+  WRITE_UINT_FIELD(relation_oid, relationOid, relationOid);
 }
 
 static void

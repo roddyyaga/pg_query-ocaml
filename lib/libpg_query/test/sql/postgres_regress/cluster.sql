@@ -196,6 +196,12 @@ drop table clstr_temp;
 
 RESET SESSION AUTHORIZATION;
 
+-- check clustering an empty table
+DROP TABLE clustertest;
+CREATE TABLE clustertest (f1 int PRIMARY KEY);
+CLUSTER clustertest USING clustertest_pkey;
+CLUSTER clustertest;
+
 -- Check that partitioned tables cannot be clustered
 CREATE TABLE clstrpart (a int) PARTITION BY RANGE (a);
 CREATE INDEX clstrpart_idx ON clstrpart (a);
@@ -239,6 +245,9 @@ COMMIT;
 
 -- and after clustering on clstr_expression_minus_a
 CLUSTER clstr_expression USING clstr_expression_minus_a;
+WITH rows AS
+  (SELECT ctid, lag(a) OVER (ORDER BY ctid) AS la, a FROM clstr_expression)
+SELECT * FROM rows WHERE la < a;
 BEGIN;
 SET LOCAL enable_seqscan = false;
 EXPLAIN (COSTS OFF) SELECT * FROM clstr_expression WHERE upper(b) = 'PREFIX3';
@@ -249,6 +258,9 @@ COMMIT;
 
 -- and after clustering on clstr_expression_upper_b
 CLUSTER clstr_expression USING clstr_expression_upper_b;
+WITH rows AS
+  (SELECT ctid, lag(b) OVER (ORDER BY ctid) AS lb, b FROM clstr_expression)
+SELECT * FROM rows WHERE upper(lb) > upper(b);
 BEGIN;
 SET LOCAL enable_seqscan = false;
 EXPLAIN (COSTS OFF) SELECT * FROM clstr_expression WHERE upper(b) = 'PREFIX3';
