@@ -990,6 +990,7 @@
 #undef HAVE_EXECINFO_H
 #undef HAVE_BACKTRACE_SYMBOLS
 #undef HAVE__GET_CPUID
-#ifdef __FreeBSD__
+#include <stdlib.h>
+#if defined(__FreeBSD__) || defined(__NetBSD__) || (defined(__GLIBC__) && ((__GLIBC__ == 2 && __GLIBC_MINOR__ >= 38) || __GLIBC__ > 2))
 #define HAVE_STRCHRNUL
 #endif
