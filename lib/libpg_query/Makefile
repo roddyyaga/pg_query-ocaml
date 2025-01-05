@@ -157,7 +157,8 @@ extract_source: $(PGDIR)
 	# Avoid dependency on cpuid.h (only supported on x86 systems)
 	echo "#undef HAVE__GET_CPUID" >> ./src/postgres/include/pg_config.h
 	# Ensure we don't fail on systems that have strchrnul support (FreeBSD)
-	echo "#ifdef __FreeBSD__" >> ./src/postgres/include/pg_config.h
+	echo "#include <stdlib.h>" >>  $(PGDIR)/src/include/pg_config.h
+	echo "#if defined(__FreeBSD__) || defined(__NetBSD__) || (defined(__GLIBC__) && ((__GLIBC__ == 2 && __GLIBC_MINOR__ >= 38) || __GLIBC__ > 2))" >> $(PGDIR)/src/include/pg_config.h
 	echo "#define HAVE_STRCHRNUL" >> ./src/postgres/include/pg_config.h
 	echo "#endif" >> ./src/postgres/include/pg_config.h
 	# Copy version information so its easily accessible
