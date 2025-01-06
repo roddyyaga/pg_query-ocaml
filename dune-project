@@ -14,7 +14,9 @@
 
 (authors "Roddy MacSween <github@roddymacsween.co.uk>")
 
-(maintainers "Roddy MacSween <github@roddymacsween.co.uk>")
+(maintainers
+  "Roddy MacSween <github@roddymacsween.co.uk>"
+  "Antonio Monteiro <anmonteiro@gmail.com>")
 
 (generate_opam_files true)
 

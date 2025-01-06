@@ -4,7 +4,10 @@ version: "0.9.8"
 synopsis: "Bindings to libpg_query for parsing PostgreSQL"
 description:
   "OCaml bindings to libpg_query for parsing PostgreSQL, and a command-line tool that uses them"
-maintainer: ["Roddy MacSween <github@roddymacsween.co.uk>"]
+maintainer: [
+  "Roddy MacSween <github@roddymacsween.co.uk>"
+  "Antonio Monteiro <anmonteiro@gmail.com>"
+]
 authors: ["Roddy MacSween <github@roddymacsween.co.uk>"]
 license: "MIT"
 homepage: "https://github.com/roddyyaga/pg_query-ocaml"
