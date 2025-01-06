@@ -1,3 +1,4 @@
 (tests
  (names test)
+ (modes native)
  (libraries alcotest pg_query))
