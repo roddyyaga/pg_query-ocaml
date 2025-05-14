@@ -59,15 +59,33 @@ select testtext || testvarchar as concat, testnumeric + 42 as sum
 from basictest;
 
 -- check that union/case/coalesce type resolution handles domains properly
-select coalesce(4::domainint4, 7) is of (int4) as t;
-select coalesce(4::domainint4, 7) is of (domainint4) as f;
-select coalesce(4::domainint4, 7::domainint4) is of (domainint4) as t;
+select pg_typeof(coalesce(4::domainint4, 7));
+select pg_typeof(coalesce(4::domainint4, 7::domainint4));
 
 drop table basictest;
 drop domain domainvarchar restrict;
 drop domain domainnumeric restrict;
 drop domain domainint4 restrict;
 drop domain domaintext;
+
+
+-- Test non-error-throwing input
+
+create domain positiveint int4 check(value > 0);
+create domain weirdfloat float8 check((1 / value) < 10);
+
+select pg_input_is_valid('1', 'positiveint');
+select pg_input_is_valid('junk', 'positiveint');
+select pg_input_is_valid('-1', 'positiveint');
+select * from pg_input_error_info('junk', 'positiveint');
+select * from pg_input_error_info('-1', 'positiveint');
+select * from pg_input_error_info('junk', 'weirdfloat');
+select * from pg_input_error_info('0.01', 'weirdfloat');
+-- We currently can't trap errors raised in the CHECK expression itself
+select * from pg_input_error_info('0', 'weirdfloat');
+
+drop domain positiveint;
+drop domain weirdfloat;
 
 
 -- Test domains over array types
@@ -289,6 +307,10 @@ table dcomptable;
 update dcomptable set f1[1].cf1 = -1;  -- fail
 update dcomptable set f1[1].cf1 = 1;
 table dcomptable;
+-- if there's no constraints, a different code path is taken:
+alter domain dcomptype drop constraint dcomptype_check;
+update dcomptable set f1[1].cf1 = -1;  -- now ok
+table dcomptable;
 
 drop table dcomptable;
 drop type comptype cascade;
@@ -407,6 +429,17 @@ alter domain dnotnulltest drop not null;
 
 update domnotnull set col1 = null;
 
+update domnotnull set col1 = 5;
+
+-- these constraints can also be added and removed by name
+alter domain dnotnulltest add constraint dnotnulltest_notnull not null;
+update domnotnull set col1 = null;		-- fails
+select conname, pg_get_constraintdef(oid) from pg_constraint
+ where contypid = 'dnotnulltest'::regtype;
+
+alter domain dnotnulltest drop constraint dnotnulltest_notnull;
+update domnotnull set col1 = null;
+
 drop domain dnotnulltest cascade;
 
 -- Test ALTER DOMAIN .. DEFAULT ..
@@ -436,6 +469,8 @@ alter domain con add constraint t check (VALUE < 1); -- fails
 alter domain con add constraint t check (VALUE < 34);
 alter domain con add check (VALUE > 0);
 
+\dD con
+
 insert into domcontest values (-5); -- fails
 insert into domcontest values (42); -- fails
 insert into domcontest values (5);
@@ -446,6 +481,37 @@ insert into domcontest values (42);
 
 alter domain con drop constraint nonexistent;
 alter domain con drop constraint if exists nonexistent;
+
+-- not-null constraints
+create domain connotnull integer;
+create table domconnotnulltest
+( col1 connotnull
+, col2 connotnull
+);
+
+insert into domconnotnulltest default values;
+alter domain connotnull add not null; -- fails
+
+update domconnotnulltest set col1 = 5;
+alter domain connotnull add not null; -- fails
+
+update domconnotnulltest set col2 = 6;
+
+alter domain connotnull add constraint constr1 not null;
+select count(*) from pg_constraint where contypid = 'connotnull'::regtype and contype = 'n';
+alter domain connotnull add constraint constr1bis not null;  -- redundant
+select count(*) from pg_constraint where contypid = 'connotnull'::regtype and contype = 'n';
+
+\dD connotnull
+
+update domconnotnulltest set col1 = null; -- fails
+
+alter domain connotnull drop constraint constr1;
+
+update domconnotnulltest set col1 = null;
+
+drop domain connotnull cascade;
+drop table domconnotnulltest;
 
 -- Test ALTER DOMAIN .. CONSTRAINT .. NOT VALID
 create domain things AS INT;
@@ -787,3 +853,39 @@ create domain testdomain1 as int constraint unsigned check (value > 0);
 alter domain testdomain1 rename constraint unsigned to unsigned_foo;
 alter domain testdomain1 drop constraint unsigned_foo;
 drop domain testdomain1;
+
+--
+-- Get the base type of a domain
+--
+create domain mytext as text;
+create domain mytext_child_1 as mytext;
+
+select pg_basetype('mytext'::regtype);
+select pg_basetype('mytext_child_1'::regtype);
+select pg_basetype(1);  -- expect NULL not error
+
+drop domain mytext cascade;
+
+
+--
+-- Information schema
+--
+
+SELECT * FROM information_schema.column_domain_usage
+  WHERE domain_name IN ('con', 'dom', 'pos_int', 'things')
+  ORDER BY domain_name;
+
+SELECT * FROM information_schema.domain_constraints
+  WHERE domain_name IN ('con', 'dom', 'pos_int', 'things')
+  ORDER BY constraint_name;
+
+SELECT * FROM information_schema.domains
+  WHERE domain_name IN ('con', 'dom', 'pos_int', 'things')
+  ORDER BY domain_name;
+
+SELECT * FROM information_schema.check_constraints
+  WHERE (constraint_schema, constraint_name)
+        IN (SELECT constraint_schema, constraint_name
+            FROM information_schema.domain_constraints
+            WHERE domain_name IN ('con', 'dom', 'pos_int', 'things'))
+  ORDER BY constraint_name;

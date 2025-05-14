@@ -12,7 +12,7 @@
  * example.  For the most part, however, code outside the core planner
  * should not need to include any optimizer/ header except this one.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/optimizer.h
@@ -58,17 +58,23 @@ extern Selectivity clause_selectivity(PlannerInfo *root,
 									  int varRelid,
 									  JoinType jointype,
 									  SpecialJoinInfo *sjinfo);
-extern Selectivity clauselist_selectivity_simple(PlannerInfo *root,
-												 List *clauses,
-												 int varRelid,
-												 JoinType jointype,
-												 SpecialJoinInfo *sjinfo,
-												 Bitmapset *estimatedclauses);
+extern Selectivity clause_selectivity_ext(PlannerInfo *root,
+										  Node *clause,
+										  int varRelid,
+										  JoinType jointype,
+										  SpecialJoinInfo *sjinfo,
+										  bool use_extended_stats);
 extern Selectivity clauselist_selectivity(PlannerInfo *root,
 										  List *clauses,
 										  int varRelid,
 										  JoinType jointype,
 										  SpecialJoinInfo *sjinfo);
+extern Selectivity clauselist_selectivity_ext(PlannerInfo *root,
+											  List *clauses,
+											  int varRelid,
+											  JoinType jointype,
+											  SpecialJoinInfo *sjinfo,
+											  bool use_extended_stats);
 
 /* in path/costsize.c: */
 
@@ -80,29 +86,31 @@ extern PGDLLIMPORT double cpu_index_tuple_cost;
 extern PGDLLIMPORT double cpu_operator_cost;
 extern PGDLLIMPORT double parallel_tuple_cost;
 extern PGDLLIMPORT double parallel_setup_cost;
+extern PGDLLIMPORT double recursive_worktable_factor;
 extern PGDLLIMPORT int effective_cache_size;
 
 extern double clamp_row_est(double nrows);
+extern int32 clamp_width_est(int64 tuple_width);
+extern long clamp_cardinality_to_long(Cardinality x);
 
 /* in path/indxpath.c: */
 
-extern bool is_pseudo_constant_for_index(Node *expr, IndexOptInfo *index);
-extern bool is_pseudo_constant_for_index_new(PlannerInfo *root, Node *expr,
-											 IndexOptInfo *index);
+extern bool is_pseudo_constant_for_index(PlannerInfo *root, Node *expr,
+										 IndexOptInfo *index);
 
 /* in plan/planner.c: */
 
-/* possible values for force_parallel_mode */
+/* possible values for debug_parallel_query */
 typedef enum
 {
-	FORCE_PARALLEL_OFF,
-	FORCE_PARALLEL_ON,
-	FORCE_PARALLEL_REGRESS
-}			ForceParallelMode;
+	DEBUG_PARALLEL_OFF,
+	DEBUG_PARALLEL_ON,
+	DEBUG_PARALLEL_REGRESS,
+}			DebugParallelMode;
 
 /* GUC parameters */
-extern int	force_parallel_mode;
-extern bool parallel_leader_participation;
+extern PGDLLIMPORT int debug_parallel_query;
+extern PGDLLIMPORT bool parallel_leader_participation;
 
 extern struct PlannedStmt *planner(Query *parse, const char *query_string,
 								   int cursorOptions,
@@ -131,17 +139,22 @@ extern Expr *canonicalize_qual(Expr *qual, bool is_check);
 /* in util/clauses.c: */
 
 extern bool contain_mutable_functions(Node *clause);
+extern bool contain_mutable_functions_after_planning(Expr *expr);
 extern bool contain_volatile_functions(Node *clause);
+extern bool contain_volatile_functions_after_planning(Expr *expr);
 extern bool contain_volatile_functions_not_nextval(Node *clause);
 
 extern Node *eval_const_expressions(PlannerInfo *root, Node *node);
+
+extern void convert_saop_to_hashed_saop(Node *node);
 
 extern Node *estimate_expression_value(PlannerInfo *root, Node *node);
 
 extern Expr *evaluate_expr(Expr *expr, Oid result_type, int32 result_typmod,
 						   Oid result_collation);
 
-extern List *expand_function_arguments(List *args, Oid result_type,
+extern List *expand_function_arguments(List *args, bool include_out_arguments,
+									   Oid result_type,
 									   struct HeapTupleData *func_tuple);
 
 /* in util/predtest.c: */
@@ -179,16 +192,14 @@ extern SortGroupClause *get_sortgroupref_clause_noerr(Index sortref,
 #define PVC_RECURSE_PLACEHOLDERS	0x0020	/* recurse into PlaceHolderVar
 											 * arguments */
 
-extern Bitmapset *pull_varnos(Node *node);
-extern Bitmapset *pull_varnos_of_level(Node *node, int levelsup);
-extern Bitmapset *pull_varnos_new(PlannerInfo *root, Node *node);
-extern Bitmapset *pull_varnos_of_level_new(PlannerInfo *root, Node *node, int levelsup);
+extern Bitmapset *pull_varnos(PlannerInfo *root, Node *node);
+extern Bitmapset *pull_varnos_of_level(PlannerInfo *root, Node *node, int levelsup);
 extern void pull_varattnos(Node *node, Index varno, Bitmapset **varattnos);
 extern List *pull_vars_of_level(Node *node, int levelsup);
 extern bool contain_var_clause(Node *node);
 extern bool contain_vars_of_level(Node *node, int levelsup);
 extern int	locate_var_of_level(Node *node, int levelsup);
 extern List *pull_var_clause(Node *node, int flags);
-extern Node *flatten_join_alias_vars(Query *query, Node *node);
+extern Node *flatten_join_alias_vars(PlannerInfo *root, Query *query, Node *node);
 
 #endif							/* OPTIMIZER_H */

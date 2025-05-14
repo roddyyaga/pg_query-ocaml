@@ -14,6 +14,7 @@
 
 #define READ_INT_FIELD(outname, outname_json, fldname) node->fldname = msg->outname;
 #define READ_UINT_FIELD(outname, outname_json, fldname) node->fldname = msg->outname;
+#define READ_UINT64_FIELD(outname, outname_json, fldname) node->fldname = msg->outname;
 #define READ_LONG_FIELD(outname, outname_json, fldname) node->fldname = msg->outname;
 #define READ_FLOAT_FIELD(outname, outname_json, fldname) node->fldname = msg->outname;
 #define READ_BOOL_FIELD(outname, outname_json, fldname) node->fldname = msg->outname;
@@ -49,9 +50,9 @@
 		node->fldname = _readNode(msg->outname); \
 	}
 
-#define READ_EXPR_PTR_FIELD(outname, outname_json, fldname) \
+#define READ_ABSTRACT_PTR_FIELD(outname, outname_json, fldname, fldtype) \
 	if (msg->outname != NULL) { \
-		node->fldname = (Expr *) _readNode(msg->outname); \
+		node->fldname = (fldtype) _readNode(msg->outname); \
 	}
 
 #define READ_VALUE_FIELD(outname, outname_json, fldname) \
@@ -73,6 +74,12 @@
 	}
 
 static Node * _readNode(PgQuery__Node *msg);
+
+static String *
+_readString(PgQuery__String* msg)
+{
+	return makeString(pstrdup(msg->sval));
+}
 
 #include "pg_query_enum_defs.c"
 #include "pg_query_readfuncs_defs.c"
@@ -96,17 +103,45 @@ static Node * _readNode(PgQuery__Node *msg)
 		case PG_QUERY__NODE__NODE_INTEGER:
 			return (Node *) makeInteger(msg->integer->ival);
 		case PG_QUERY__NODE__NODE_FLOAT:
-			return (Node *) makeFloat(pstrdup(msg->float_->str));
+			return (Node *) makeFloat(pstrdup(msg->float_->fval));
+		case PG_QUERY__NODE__NODE_BOOLEAN:
+			return (Node *) makeBoolean(msg->boolean->boolval);
 		case PG_QUERY__NODE__NODE_STRING:
-			return (Node *) makeString(pstrdup(msg->string->str));
+			return (Node *) makeString(pstrdup(msg->string->sval));
 		case PG_QUERY__NODE__NODE_BIT_STRING:
-			return (Node *) makeBitString(pstrdup(msg->bit_string->str));
-		case PG_QUERY__NODE__NODE_NULL:
-			{
-				Value *v = makeNode(Value);
-				v->type = T_Null;
-				return (Node *) v;
+			return (Node *) makeBitString(pstrdup(msg->bit_string->bsval));
+		case PG_QUERY__NODE__NODE_A_CONST: {
+			A_Const *ac = makeNode(A_Const);
+			ac->location = msg->a_const->location;
+
+			if (msg->a_const->isnull) {
+				ac->isnull = true;
+			} else {
+				switch (msg->a_const->val_case) {
+					case PG_QUERY__A__CONST__VAL_IVAL:
+						ac->val.ival = *makeInteger(msg->a_const->ival->ival);
+						break;
+					case PG_QUERY__A__CONST__VAL_FVAL:
+						ac->val.fval = *makeFloat(pstrdup(msg->a_const->fval->fval));
+						break;
+					case PG_QUERY__A__CONST__VAL_BOOLVAL:
+						ac->val.boolval = *makeBoolean(msg->a_const->boolval->boolval);
+						break;
+					case PG_QUERY__A__CONST__VAL_SVAL:
+						ac->val.sval = *makeString(pstrdup(msg->a_const->sval->sval));
+						break;
+					case PG_QUERY__A__CONST__VAL_BSVAL:
+						ac->val.bsval = *makeBitString(pstrdup(msg->a_const->bsval->bsval));
+						break;
+					case PG_QUERY__A__CONST__VAL__NOT_SET:
+					case _PG_QUERY__A__CONST__VAL__CASE_IS_INT_SIZE:
+						Assert(false);
+						break;
+				}
 			}
+
+			return (Node *) ac;
+		}
 		case PG_QUERY__NODE__NODE_LIST:
 			return (Node *) _readList(msg->list);
 		case PG_QUERY__NODE__NODE__NOT_SET:

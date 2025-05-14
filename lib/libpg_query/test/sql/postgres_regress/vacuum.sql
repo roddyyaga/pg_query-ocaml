@@ -49,7 +49,7 @@ CLUSTER vaccluster;
 CREATE FUNCTION do_analyze() RETURNS VOID VOLATILE LANGUAGE SQL
 	AS 'ANALYZE pg_am';
 CREATE FUNCTION wrap_do_analyze(c INT) RETURNS INT IMMUTABLE LANGUAGE SQL
-	AS 'SELECT $1 FROM do_analyze()';
+	AS 'SELECT $1 FROM public.do_analyze()';
 CREATE INDEX ON vaccluster(wrap_do_analyze(i));
 INSERT INTO vaccluster VALUES (1), (2);
 ANALYZE vaccluster;
@@ -65,6 +65,35 @@ BEGIN;
 INSERT INTO vactst SELECT generate_series(301, 400);
 DELETE FROM vactst WHERE i % 5 <> 0; -- delete a few rows inside
 ANALYZE vactst;
+COMMIT;
+
+-- Test ANALYZE setting relhassubclass=f for non-partitioning inheritance
+BEGIN;
+CREATE TABLE past_inh_parent ();
+CREATE TABLE past_inh_child () INHERITS (past_inh_parent);
+INSERT INTO past_inh_child DEFAULT VALUES;
+INSERT INTO past_inh_child DEFAULT VALUES;
+ANALYZE past_inh_parent;
+SELECT reltuples, relhassubclass
+  FROM pg_class WHERE oid = 'past_inh_parent'::regclass;
+DROP TABLE past_inh_child;
+ANALYZE past_inh_parent;
+SELECT reltuples, relhassubclass
+  FROM pg_class WHERE oid = 'past_inh_parent'::regclass;
+COMMIT;
+
+-- Test ANALYZE setting relhassubclass=f for partitioning
+BEGIN;
+CREATE TABLE past_parted (i int) PARTITION BY LIST(i);
+CREATE TABLE past_part PARTITION OF past_parted FOR VALUES IN (1);
+INSERT INTO past_parted VALUES (1),(1);
+ANALYZE past_parted;
+DROP TABLE past_part;
+SELECT reltuples, relhassubclass
+  FROM pg_class WHERE oid = 'past_parted'::regclass;
+ANALYZE past_parted;
+SELECT reltuples, relhassubclass
+  FROM pg_class WHERE oid = 'past_parted'::regclass;
 COMMIT;
 
 VACUUM FULL pg_am;
@@ -84,6 +113,10 @@ CREATE INDEX brin_pvactst ON pvactst USING brin (i);
 CREATE INDEX gin_pvactst ON pvactst USING gin (a);
 CREATE INDEX gist_pvactst ON pvactst USING gist (p);
 CREATE INDEX spgist_pvactst ON pvactst USING spgist (p);
+CREATE TABLE pvactst2 (i INT) WITH (autovacuum_enabled = off);
+INSERT INTO pvactst2 SELECT generate_series(1, 1000);
+CREATE INDEX ON pvactst2 (i);
+CREATE INDEX ON pvactst2 (i);
 
 -- VACUUM invokes parallel index cleanup
 SET min_parallel_index_scan_size to 0;
@@ -101,6 +134,14 @@ VACUUM (PARALLEL 2, INDEX_CLEANUP FALSE) pvactst;
 VACUUM (PARALLEL 2, FULL TRUE) pvactst; -- error, cannot use both PARALLEL and FULL
 VACUUM (PARALLEL) pvactst; -- error, cannot use PARALLEL option without parallel degree
 
+-- Test parallel vacuum using the minimum maintenance_work_mem with and without
+-- dead tuples.
+SET maintenance_work_mem TO 64;
+VACUUM (PARALLEL 2) pvactst2;
+DELETE FROM pvactst2 WHERE i < 1000;
+VACUUM (PARALLEL 2) pvactst2;
+RESET maintenance_work_mem;
+
 -- Test different combinations of parallel and full options for temporary tables
 CREATE TEMPORARY TABLE tmp (a int PRIMARY KEY);
 CREATE INDEX tmp_idx1 ON tmp (a);
@@ -108,6 +149,7 @@ VACUUM (PARALLEL 1, FULL FALSE) tmp; -- parallel vacuum disabled for temp tables
 VACUUM (PARALLEL 0, FULL TRUE) tmp; -- can specify parallel disabled (even though that's implied by FULL)
 RESET min_parallel_index_scan_size;
 DROP TABLE pvactst;
+DROP TABLE pvactst2;
 
 -- INDEX_CLEANUP option
 CREATE TABLE no_index_cleanup (i INT PRIMARY KEY, t TEXT);
@@ -127,13 +169,15 @@ VACUUM no_index_cleanup;
 -- Both parent relation and toast are cleaned up.
 ALTER TABLE no_index_cleanup SET (vacuum_index_cleanup = true);
 VACUUM no_index_cleanup;
+ALTER TABLE no_index_cleanup SET (vacuum_index_cleanup = auto);
+VACUUM no_index_cleanup;
 -- Parameter is set for both the parent table and its toast relation.
 INSERT INTO no_index_cleanup(i, t) VALUES (generate_series(31,60),
     repeat('1234567890',269));
 DELETE FROM no_index_cleanup WHERE i < 45;
 -- Only toast index is cleaned up.
-ALTER TABLE no_index_cleanup SET (vacuum_index_cleanup = false,
-    toast.vacuum_index_cleanup = true);
+ALTER TABLE no_index_cleanup SET (vacuum_index_cleanup = off,
+    toast.vacuum_index_cleanup = yes);
 VACUUM no_index_cleanup;
 -- Only parent is cleaned up.
 ALTER TABLE no_index_cleanup SET (vacuum_index_cleanup = true,
@@ -141,7 +185,7 @@ ALTER TABLE no_index_cleanup SET (vacuum_index_cleanup = true,
 VACUUM no_index_cleanup;
 -- Test some extra relations.
 VACUUM (INDEX_CLEANUP FALSE) vaccluster;
-VACUUM (INDEX_CLEANUP FALSE) vactst; -- index cleanup option is ignored if no indexes
+VACUUM (INDEX_CLEANUP AUTO) vactst; -- index cleanup option is ignored if no indexes
 VACUUM (INDEX_CLEANUP FALSE, FREEZE TRUE) vaccluster;
 
 -- TRUNCATE option
@@ -167,6 +211,22 @@ VACUUM (FREEZE) vacparted;
 -- check behavior with duplicate column mentions
 VACUUM ANALYZE vacparted(a,b,a);
 ANALYZE vacparted(a,b,b);
+
+-- partitioned table with index
+CREATE TABLE vacparted_i (a int primary key, b varchar(100))
+  PARTITION BY HASH (a);
+CREATE TABLE vacparted_i1 PARTITION OF vacparted_i
+  FOR VALUES WITH (MODULUS 2, REMAINDER 0);
+CREATE TABLE vacparted_i2 PARTITION OF vacparted_i
+  FOR VALUES WITH (MODULUS 2, REMAINDER 1);
+INSERT INTO vacparted_i SELECT i, 'test_'|| i from generate_series(1,10) i;
+VACUUM (ANALYZE) vacparted_i;
+VACUUM (FULL) vacparted_i;
+VACUUM (FREEZE) vacparted_i;
+SELECT relname, relhasindex FROM pg_class
+  WHERE relname LIKE 'vacparted_i%' AND relkind IN ('p','r')
+  ORDER BY relname;
+DROP TABLE vacparted_i;
 
 -- multiple tables specified
 VACUUM vaccluster, vactst;
@@ -213,6 +273,71 @@ BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
 ANALYZE vactst;
 COMMIT;
 
+-- PROCESS_TOAST option
+CREATE TABLE vac_option_tab (a INT, t TEXT);
+INSERT INTO vac_option_tab SELECT a, 't' || a FROM generate_series(1, 10) AS a;
+ALTER TABLE vac_option_tab ALTER COLUMN t SET STORAGE EXTERNAL;
+-- Check the number of vacuums done on table vac_option_tab and on its
+-- toast relation, to check that PROCESS_TOAST and PROCESS_MAIN work on
+-- what they should.
+CREATE VIEW vac_option_tab_counts AS
+  SELECT CASE WHEN c.relname IS NULL
+    THEN 'main' ELSE 'toast' END as rel,
+  s.vacuum_count
+  FROM pg_stat_all_tables s
+  LEFT JOIN pg_class c ON s.relid = c.reltoastrelid
+  WHERE c.relname = 'vac_option_tab' OR s.relname = 'vac_option_tab'
+  ORDER BY rel;
+VACUUM (PROCESS_TOAST TRUE) vac_option_tab;
+SELECT * FROM vac_option_tab_counts;
+VACUUM (PROCESS_TOAST FALSE) vac_option_tab;
+SELECT * FROM vac_option_tab_counts;
+VACUUM (PROCESS_TOAST FALSE, FULL) vac_option_tab; -- error
+
+-- PROCESS_MAIN option
+-- Only the toast table is processed.
+VACUUM (PROCESS_MAIN FALSE) vac_option_tab;
+SELECT * FROM vac_option_tab_counts;
+-- Nothing is processed.
+VACUUM (PROCESS_MAIN FALSE, PROCESS_TOAST FALSE) vac_option_tab;
+SELECT * FROM vac_option_tab_counts;
+-- Check if the filenodes nodes have been updated as wanted after FULL.
+SELECT relfilenode AS main_filenode FROM pg_class
+  WHERE relname = 'vac_option_tab' \gset
+SELECT t.relfilenode AS toast_filenode FROM pg_class c, pg_class t
+  WHERE c.reltoastrelid = t.oid AND c.relname = 'vac_option_tab' \gset
+-- Only the toast relation is processed.
+VACUUM (PROCESS_MAIN FALSE, FULL) vac_option_tab;
+SELECT relfilenode = :main_filenode AS is_same_main_filenode
+  FROM pg_class WHERE relname = 'vac_option_tab';
+SELECT t.relfilenode = :toast_filenode AS is_same_toast_filenode
+  FROM pg_class c, pg_class t
+  WHERE c.reltoastrelid = t.oid AND c.relname = 'vac_option_tab';
+
+-- BUFFER_USAGE_LIMIT option
+VACUUM (BUFFER_USAGE_LIMIT '512 kB') vac_option_tab;
+ANALYZE (BUFFER_USAGE_LIMIT '512 kB') vac_option_tab;
+-- try disabling the buffer usage limit
+VACUUM (BUFFER_USAGE_LIMIT 0) vac_option_tab;
+ANALYZE (BUFFER_USAGE_LIMIT 0) vac_option_tab;
+-- value exceeds max size error
+VACUUM (BUFFER_USAGE_LIMIT 16777220) vac_option_tab;
+-- value is less than min size error
+VACUUM (BUFFER_USAGE_LIMIT 120) vac_option_tab;
+-- integer overflow error
+VACUUM (BUFFER_USAGE_LIMIT 10000000000) vac_option_tab;
+-- incompatible with VACUUM FULL error
+VACUUM (BUFFER_USAGE_LIMIT '512 kB', FULL) vac_option_tab;
+
+-- SKIP_DATABASE_STATS option
+VACUUM (SKIP_DATABASE_STATS) vactst;
+
+-- ONLY_DATABASE_STATS option
+VACUUM (ONLY_DATABASE_STATS);
+VACUUM (ONLY_DATABASE_STATS) vactst;  -- error
+
+DROP VIEW vac_option_tab_counts;
+DROP TABLE vac_option_tab;
 DROP TABLE vaccluster;
 DROP TABLE vactst;
 DROP TABLE vacparted;

@@ -1,12 +1,12 @@
 /*--------------------------------------------------------------------
  * Symbols referenced in this file:
- * - whereToSendOutput
  * - debug_query_string
- * - ProcessInterrupts
- * - check_stack_depth
  * - stack_is_too_deep
  * - stack_base_ptr
  * - max_stack_depth_bytes
+ * - whereToSendOutput
+ * - ProcessInterrupts
+ * - check_stack_depth
  * - max_stack_depth
  *--------------------------------------------------------------------
  */
@@ -16,7 +16,7 @@
  * postgres.c
  *	  POSTGRES C Backend Interface
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -36,17 +36,12 @@
 #include <limits.h>
 #include <signal.h>
 #include <unistd.h>
-#include <sys/socket.h>
-#ifdef HAVE_SYS_SELECT_H
-#include <sys/select.h>
-#endif
-#ifdef HAVE_SYS_RESOURCE_H
-#include <sys/time.h>
 #include <sys/resource.h>
-#endif
+#include <sys/socket.h>
+#include <sys/time.h>
 
-#ifndef HAVE_GETRUSAGE
-#include "rusagestub.h"
+#ifdef USE_VALGRIND
+#include <valgrind/valgrind.h>
 #endif
 
 #include "access/parallel.h"
@@ -54,7 +49,9 @@
 #include "access/xact.h"
 #include "catalog/pg_type.h"
 #include "commands/async.h"
+#include "commands/event_trigger.h"
 #include "commands/prepare.h"
+#include "common/pg_prng.h"
 #include "jit/jit.h"
 #include "libpq/libpq.h"
 #include "libpq/pqformat.h"
@@ -79,6 +76,7 @@
 #include "rewrite/rewriteHandler.h"
 #include "storage/bufmgr.h"
 #include "storage/ipc.h"
+#include "storage/pmsignal.h"
 #include "storage/proc.h"
 #include "storage/procsignal.h"
 #include "storage/sinval.h"
@@ -86,12 +84,15 @@
 #include "tcop/pquery.h"
 #include "tcop/tcopprot.h"
 #include "tcop/utility.h"
+#include "utils/guc_hooks.h"
+#include "utils/injection_point.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/ps_status.h"
 #include "utils/snapmgr.h"
 #include "utils/timeout.h"
 #include "utils/timestamp.h"
+#include "utils/varlena.h"
 
 /* ----------------
  *		global variables
@@ -116,7 +117,24 @@ __thread int			max_stack_depth = 100;
 /* wait N seconds to allow attach from a debugger */
 
 
+/* Time between checks that the client is still connected. */
 
+
+/* flags for non-system relation kinds to restrict use */
+
+
+/* ----------------
+ *		private typedefs etc
+ * ----------------
+ */
+
+/* type of argument for bind_param_error_callback */
+typedef struct BindParamCbData
+{
+	const char *portalName;
+	int			paramno;		/* zero-based param number, or -1 initially */
+	const char *paramval;		/* textual input string, if available */
+} BindParamCbData;
 
 /* ----------------
  *		private variables
@@ -129,19 +147,10 @@ static __thread long max_stack_depth_bytes = 100 * 1024L;
 
 /*
  * Stack base pointer -- initialized by PostmasterMain and inherited by
- * subprocesses. This is not static because old versions of PL/Java modify
- * it directly. Newer versions use set_stack_base(), but we want to stay
- * binary-compatible for the time being.
+ * subprocesses (but see also InitPostmasterChild).
  */
-__thread char	   *stack_base_ptr = NULL;
+static __thread char *stack_base_ptr = NULL;
 
-
-/*
- * On IA64 we also have to remember the register stack base.
- */
-#if defined(__ia64__) || defined(__ia64)
-char	   *register_stack_base_ptr = NULL;
-#endif
 
 /*
  * Flag to keep track of whether we have started a transaction.
@@ -179,7 +188,6 @@ char	   *register_stack_base_ptr = NULL;
 
 
 
-
 /* reused buffer to pass to SendRowDescriptionMessage() */
 
 
@@ -193,12 +201,11 @@ static int	interactive_getc(void);
 static int	SocketBackend(StringInfo inBuf);
 static int	ReadCommand(StringInfo inBuf);
 static void forbidden_in_wal_sender(char firstchar);
-static List *pg_rewrite_query(Query *query);
 static bool check_log_statement(List *stmt_list);
 static int	errdetail_execute(List *raw_parsetree_list);
 static int	errdetail_params(ParamListInfo params);
 static int	errdetail_abort(void);
-static int	errdetail_recovery_conflict(void);
+static void bind_param_error_callback(void *arg);
 static void start_xact_command(void);
 static void finish_xact_command(void);
 static bool IsTransactionExitStmt(Node *parsetree);
@@ -208,6 +215,36 @@ static void drop_unnamed_stmt(void);
 static void log_disconnections(int code, Datum arg);
 static void enable_statement_timeout(void);
 static void disable_statement_timeout(void);
+
+
+/* ----------------------------------------------------------------
+ *		infrastructure for valgrind debugging
+ * ----------------------------------------------------------------
+ */
+#ifdef USE_VALGRIND
+/* This variable should be set at the top of the main loop. */
+static unsigned int old_valgrind_error_count;
+
+/*
+ * If Valgrind detected any errors since old_valgrind_error_count was updated,
+ * report the current query as the cause.  This should be called at the end
+ * of message processing.
+ */
+static void
+valgrind_report_error_query(const char *query)
+{
+	unsigned int valgrind_error_count = VALGRIND_COUNT_ERRORS;
+
+	if (unlikely(valgrind_error_count != old_valgrind_error_count) &&
+		query != NULL)
+		VALGRIND_PRINTF("Valgrind detected %u error(s) during execution of \"%s\"\n",
+						valgrind_error_count - old_valgrind_error_count,
+						query);
+}
+
+#else							/* !USE_VALGRIND */
+#define valgrind_report_error_query(query) ((void) 0)
+#endif							/* USE_VALGRIND */
 
 
 /* ----------------------------------------------------------------
@@ -291,6 +328,8 @@ static void disable_statement_timeout(void);
  */
 #ifdef COPY_PARSE_PLAN_TREES
 #endif
+#ifdef WRITE_READ_PARSE_PLAN_TREES
+#endif
 
 /*
  * Given a raw parsetree (gram.y output), and optionally information about
@@ -304,9 +343,17 @@ static void disable_statement_timeout(void);
 
 
 /*
- * Do parse analysis and rewriting.  This is the same as pg_analyze_and_rewrite
- * except that external-parameter resolution is determined by parser callback
- * hooks instead of a fixed list of parameter datatypes.
+ * Do parse analysis and rewriting.  This is the same as
+ * pg_analyze_and_rewrite_fixedparams except that it's okay to deduce
+ * information about $n symbol datatypes from context.
+ */
+
+
+/*
+ * Do parse analysis and rewriting.  This is the same as
+ * pg_analyze_and_rewrite_fixedparams except that, instead of a fixed list of
+ * parameter datatypes, a parser callback is supplied that can do
+ * external-parameter resolution and possibly other things.
  */
 
 
@@ -434,6 +481,13 @@ static void disable_statement_timeout(void);
 
 
 /*
+ * bind_param_error_callback
+ *
+ * Error context callback used while parsing parameters in a Bind message
+ */
+
+
+/*
  * exec_describe_statement_message
  *
  * Process a "Describe" message for a prepared statement
@@ -485,8 +539,8 @@ static void disable_statement_timeout(void);
 /*
  * quickdie() occurs when signaled SIGQUIT by the postmaster.
  *
- * Some backend has bought the farm,
- * so we need to stop what we're doing and exit.
+ * Either some backend has bought the farm, or we've been told to shut down
+ * "immediately"; so we need to stop what we're doing and exit.
  */
 
 
@@ -506,10 +560,18 @@ static void disable_statement_timeout(void);
 
 
 /*
- * RecoveryConflictInterrupt: out-of-line portion of recovery conflict
- * handling following receipt of SIGUSR1. Designed to be similar to die()
- * and StatementCancelHandler(). Called only by a normal user backend
- * that begins a transaction during recovery.
+ * Tell the next CHECK_FOR_INTERRUPTS() to check for a particular type of
+ * recovery conflict.  Runs in a SIGUSR1 handler.
+ */
+
+
+/*
+ * Check one individual conflict reason.
+ */
+
+
+/*
+ * Check each possible recovery conflict reason.
  */
 
 
@@ -529,45 +591,6 @@ static void disable_statement_timeout(void);
 void ProcessInterrupts(void) {}
 
 
-
-/*
- * IA64-specific code to fetch the AR.BSP register for stack depth checks.
- *
- * We currently support gcc, icc, and HP-UX's native compiler here.
- *
- * Note: while icc accepts gcc asm blocks on x86[_64], this is not true on
- * ia64 (at least not in icc versions before 12.x).  So we have to carry a
- * separate implementation for it.
- */
-#if defined(__ia64__) || defined(__ia64)
-
-#if defined(__hpux) && !defined(__GNUC__) && !defined(__INTEL_COMPILER)
-/* Assume it's HP-UX native compiler */
-#include <ia64/sys/inline.h>
-#define ia64_get_bsp() ((char *) (_Asm_mov_from_ar(_AREG_BSP, _NO_FENCE)))
-#elif defined(__INTEL_COMPILER)
-/* icc */
-#include <asm/ia64regs.h>
-#define ia64_get_bsp() ((char *) __getReg(_IA64_REG_AR_BSP))
-#else
-/* gcc */
-static __inline__ char *
-ia64_get_bsp(void)
-{
-	char	   *ret;
-
-	/* the ;; is a "stop", seems to be required before fetching BSP */
-	__asm__ __volatile__(
-						 ";;\n"
-						 "	mov	%0=ar.bsp	\n"
-:						 "=r"(ret));
-
-	return ret;
-}
-#endif
-#endif							/* IA64 */
-
-
 /*
  * set_stack_base: set up reference point for stack depth checking
  *
@@ -575,13 +598,8 @@ ia64_get_bsp(void)
  */
 #ifndef HAVE__BUILTIN_FRAME_ADDRESS
 #endif
-#if defined(__ia64__) || defined(__ia64)
-#else
-#endif
 #ifdef HAVE__BUILTIN_FRAME_ADDRESS
 #else
-#endif
-#if defined(__ia64__) || defined(__ia64)
 #endif
 
 /*
@@ -593,9 +611,7 @@ ia64_get_bsp(void)
  * the main thread's stack, so it sets the base pointer before the call, and
  * restores it afterwards.
  */
-#if defined(__ia64__) || defined(__ia64)
-#else
-#endif
+
 
 /*
  * check_stack_depth/stack_is_too_deep: check for excessively deep recursion
@@ -651,22 +667,6 @@ stack_is_too_deep(void)
 		stack_base_ptr != NULL)
 		return true;
 
-	/*
-	 * On IA64 there is a separate "register" stack that requires its own
-	 * independent check.  For this, we have to measure the change in the
-	 * "BSP" pointer from PostgresMain to here.  Logic is just as above,
-	 * except that we know IA64's register stack grows up.
-	 *
-	 * Note we assume that the same max_stack_depth applies to both stacks.
-	 */
-#if defined(__ia64__) || defined(__ia64)
-	stack_depth = (long) (ia64_get_bsp() - register_stack_base_ptr);
-
-	if (stack_depth > max_stack_depth_bytes &&
-		register_stack_base_ptr != NULL)
-		return true;
-#endif							/* IA64 */
-
 	return false;
 }
 
@@ -675,6 +675,40 @@ stack_is_too_deep(void)
 
 /* GUC assign hook for max_stack_depth */
 
+
+/*
+ * GUC check_hook for client_connection_check_interval
+ */
+
+
+/*
+ * GUC check_hook for log_parser_stats, log_planner_stats, log_executor_stats
+ *
+ * This function and check_log_stats interact to prevent their variables from
+ * being set in a disallowed combination.  This is a hack that doesn't really
+ * work right; for example it might fail while applying pg_db_role_setting
+ * values even though the final state would have been acceptable.  However,
+ * since these variables are legacy settings with little production usage,
+ * we tolerate that.
+ */
+
+
+/*
+ * GUC check_hook for log_statement_stats
+ */
+
+
+/* GUC assign hook for transaction_timeout */
+
+
+/*
+ * GUC check_hook for restrict_nonsystem_relation_kind
+ */
+
+
+/*
+ * GUC assign_hook for restrict_nonsystem_relation_kind
+ */
 
 
 /*
@@ -694,7 +728,7 @@ stack_is_too_deep(void)
 
 /* ----------------------------------------------------------------
  * process_postgres_switches
- *	   Parse command line arguments for PostgresMain
+ *	   Parse command line arguments for backends
  *
  * This is called twice, once for the "secure" options coming from the
  * postmaster or command line, and once for the "insecure" options coming
@@ -717,19 +751,30 @@ stack_is_too_deep(void)
 #endif
 
 
+/*
+ * PostgresSingleUserMain
+ *     Entry point for single user mode. argc/argv are the command line
+ *     arguments to be used.
+ *
+ * Performs single user specific setup then calls PostgresMain() to actually
+ * process queries. Single user mode specific setup should go here, rather
+ * than PostgresMain() or InitPostgres() when reasonably possible.
+ */
+
+
+
 /* ----------------------------------------------------------------
  * PostgresMain
- *	   postgres main loop -- all backends, interactive or otherwise start here
+ *	   postgres main loop -- all backends, interactive or otherwise loop here
  *
- * argc/argv are the command line arguments to be used.  (When being forked
- * by the postmaster, these are not the original argv array of the process.)
- * dbname is the name of the database to connect to, or NULL if the database
- * name should be extracted from the command line arguments or defaulted.
- * username is the PostgreSQL user name to be used for the session.
+ * dbname is the name of the database to connect to, username is the
+ * PostgreSQL user name to be used for the session.
+ *
+ * NB: Single user mode specific setup should go to PostgresSingleUserMain()
+ * if reasonably possible.
  * ----------------------------------------------------------------
  */
-#ifdef EXEC_BACKEND
-#else
+#ifdef USE_VALGRIND
 #endif
 
 /*
@@ -747,11 +792,8 @@ stack_is_too_deep(void)
  *
  * Return -1 if unknown
  */
-#if defined(HAVE_GETRLIMIT) && defined(RLIMIT_STACK)
-#else							/* no getrlimit */
-#if defined(WIN32) || defined(__CYGWIN__)
-#else							/* not windows ... give up */
-#endif
+#if defined(HAVE_GETRLIMIT)
+#else
 #endif
 
 
@@ -760,11 +802,11 @@ stack_is_too_deep(void)
 
 
 
-#if defined(HAVE_GETRUSAGE)
+#ifndef WIN32
 #if defined(__darwin__)
 #else
 #endif
-#endif							/* HAVE_GETRUSAGE */
+#endif							/* !WIN32 */
 
 /*
  * on_proc_exit handler to log end of session

@@ -4,15 +4,16 @@
 
 -- Tests for GUC password_encryption
 SET password_encryption = 'novalue'; -- error
-SET password_encryption = true; -- ok
+SET password_encryption = true; -- error
 SET password_encryption = 'md5'; -- ok
 SET password_encryption = 'scram-sha-256'; -- ok
 
 -- consistency of password entries
 SET password_encryption = 'md5';
-CREATE ROLE regress_passwd1 PASSWORD 'role_pwd1';
-SET password_encryption = 'on';
-CREATE ROLE regress_passwd2 PASSWORD 'role_pwd2';
+CREATE ROLE regress_passwd1;
+ALTER ROLE regress_passwd1 PASSWORD 'role_pwd1';
+CREATE ROLE regress_passwd2;
+ALTER ROLE regress_passwd2 PASSWORD 'role_pwd2';
 SET password_encryption = 'scram-sha-256';
 CREATE ROLE regress_passwd3 PASSWORD 'role_pwd3';
 CREATE ROLE regress_passwd4 PASSWORD NULL;
@@ -64,6 +65,10 @@ CREATE ROLE regress_passwd7 PASSWORD 'md5012345678901234567890123456789zz';
 -- invalid length
 CREATE ROLE regress_passwd8 PASSWORD 'md501234567890123456789012345678901zz';
 
+-- Changing the SCRAM iteration count
+SET scram_iterations = 1024;
+CREATE ROLE regress_passwd9 PASSWORD 'alterediterationcount';
+
 SELECT rolname, regexp_replace(rolpassword, '(SCRAM-SHA-256)\$(\d+):([a-zA-Z0-9+/=]+)\$([a-zA-Z0-9+=/]+):([a-zA-Z0-9+/=]+)', '\1$\2:<salt>$<storedkey>:<serverkey>') as rolpassword_masked
     FROM pg_authid
     WHERE rolname LIKE 'regress_passwd%'
@@ -98,6 +103,7 @@ DROP ROLE regress_passwd5;
 DROP ROLE regress_passwd6;
 DROP ROLE regress_passwd7;
 DROP ROLE regress_passwd8;
+DROP ROLE regress_passwd9;
 DROP ROLE regress_passwd_empty;
 DROP ROLE regress_passwd_sha_len0;
 DROP ROLE regress_passwd_sha_len1;

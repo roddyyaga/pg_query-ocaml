@@ -2,6 +2,128 @@
 
 All versions are tagged by the major Postgres version, plus an individual semver for this library itself.
 
+## 17-6.1.0   2025-04-02
+
+* Update to Postgres 17.4, and add recent patches scheduled for Postgres 17.5 (not yet released)
+  - Notably, this pulls in support for macOS 15.4 which defines strchrnul
+    in its standard library, fixing builds on up-to-date macOS versions.
+- Deparser improvements
+  - Add parenthesis around AT LOCAL / AT TIMEZONE if needed
+  - Correctness improvements related to expressions and function calls
+
+## 17-6.0.0   2024-09-27
+
+* Upgrade to Postgres 17
+* Deparser:
+  - Add support for deparsing `JSON_TABLE`, `JSON_QUERY`, `JSON_EXISTS`, `JSON_VALUE`
+  - Add support for deparsing `JSON`, `JSON_SCALAR`, `JSON_SERIALIZE`
+  - Add support for deparsing `COPY ... FORCE_NULL(*)`
+  - Add support for deparsing `ALTER COLUMN ... SET EXPRESSION AS`
+  - Add support for deparsing `SET STATISTICS DEFAULT`
+  - Add support for deparsing `SET ACCESS METHOD DEFAULT`
+  - Add support for deparsing `... AT LOCAL`
+  - Add support for deparsing `merge_action()`
+  - Add support for deparsing `MERGE ... RETURNING`
+  - Add support for deparsing `NOT MATCHED [ BY TARGET ]`
+
+## 16-5.1.0   2024-01-08
+
+* Add support for compiling on Windows
+  - In order to build on Windows when using MSVC, use the new "Makefile.msvc"
+    with nmake, or directly compile all .c files in the src folder into a library
+  - If compiling directly, add src/postgres/include/port/win32 to the include path,
+    and when using MSVC also add src/postgres/include/port/win32_msvc
+* Add support for compiling on 32-bit systems
+  - The relevant code is enabled at compile time by checking the pointer
+    size (__SIZEOF_POINTER__ == 4)
+* Move internal headers and included .c files to src/include folder
+  - This avoids having any .c files in the top-level src/ folder that can't
+    be directly compiled, and thus lets us simplify the logic for defining
+    which source units are to be compiled.
+* Remove strnlen fallback implementation
+* Avoid use of mmap, asprintf and strndup to improve portability
+* Improve compatibility with non-POSIX systems and C89 compilers
+
+## 16-5.0.0   2023-12-22
+
+* Update to Postgres 16.1
+* Drop support for arbitrary trailing junk on integer literals
+  - Support for parsing junk after parameters, e.g. `$1OR` is retained
+* Deparser:
+  - Fix deparsing of `SYSTEM_USER`
+  - Add support for deparsing `STORAGE` mode
+  - Add support for deparsing `REVOKE ... CASCADE`
+  - Rework a_expr/b_expr/c_expr deparsing to match gram.y structure
+  - Add support for deparsing `COMPRESSION` option for columns
+  - Add support for deparsing `NULLS NOT DISTINCT` in unique constraints
+  - Add support for deparsing new SQL/JSON functionality
+
+## 15-4.2.4   2023-12-20
+
+* Scanner: Add token `ASCII_36` ("$") to support queries like "SELECT $identifier" [#211](https://github.com/pganalyze/libpg_query/pull/211), [#219](https://github.com/pganalyze/libpg_query/pull/219)
+  - Whilst these queries are not valid SQL and would fail parsing, this token can show up when using `pg_query_scan` or `pg_query_split_with_scanner` directly
+* Normalize: Fix incorrect type cast [#223](https://github.com/pganalyze/libpg_query/pull/223)
+* Deparser:
+  - Fix some `BooleanTest` cases [#206](https://github.com/pganalyze/libpg_query/issues/206)
+  - Fix `ALTER TABLE ... ENABLE TRIGGER ALL` [#222](https://github.com/pganalyze/libpg_query/pull/222)
+  - Add parens around type casts in `IndexElem` [#214](https://github.com/pganalyze/libpg_query/pull/214)
+  - Treat type casts in `func_expr_windowless` as functions [#214](https://github.com/pganalyze/libpg_query/pull/214)
+* Support changing parse mode and config settings affecting the parser [#216](https://github.com/pganalyze/libpg_query/pull/216)
+  - Alternate parse modes are useful for parsing PL/pgSQL expressions, as well as type names
+  - Additionally, you can now change config settings that affect parsing, like `standard_conforming_strings`
+  - To pass options, use the new methods ending in `_opts`, e.g. `pg_query_parse_opts`
+
+## 15-4.2.3   2023-07-07
+
+* Fix builds when compiling with `glibc >=  2.38` [#203](https://github.com/pganalyze/libpg_query/pull/203)
+* Deparser: Add support for COALESCE and other expressions in LIMIT clause [#199](https://github.com/pganalyze/libpg_query/pull/199)
+
+## 15-4.2.2   2023-07-07
+
+* Deparser:
+  - Add support for multi-statement CREATE PROCEDURE definitions [#197](https://github.com/pganalyze/libpg_query/pull/197)
+  - Correctly quote identifier in ALTER TABLE ... ADD CONSTRAINT [x] [#196](https://github.com/pganalyze/libpg_query/pull/196)
+  - Add support for index fillfactor within CREATE TABLE, fix SHOW ALL [#193](https://github.com/pganalyze/libpg_query/pull/193)
+  - Move to dedicated file for easier inclusion in third-party projects [#192](https://github.com/pganalyze/libpg_query/pull/192)
+
+## 15-4.2.1   2023-05-17
+
+* Deparser: Handle INTERVAL correctly when used in SET statements [#184](https://github.com/pganalyze/libpg_query/pull/184)
+* Deparser: Ensure index names are quoted as identifiers [#182](https://github.com/pganalyze/libpg_query/pull/182)
+* Remove limits.h from pg_query_deparse.c [#181](https://github.com/pganalyze/libpg_query/pull/181)
+
+## 15-4.2.0   2023-02-06
+
+* Update copyright notice years and authors [#175](https://github.com/pganalyze/libpg_query/pull/175)
+* Allow trailing junk in numeric literals [#177](https://github.com/pganalyze/libpg_query/pull/177)
+  - Allows parsing queries like `SELECT * FROM a WHERE b=$1ORc=$2`
+* NetBSD support [#172](https://github.com/pganalyze/libpg_query/pull/172/)
+
+## 15-4.1.0   2022-12-28
+
+* Add `Boolean` fingerprinting
+  - `Boolean` nodes are now output during fingerprinting
+* Fix parsing issue on 32-bit big endian machines
+  - Now we use `size_t` to indicate the protobuf message size
+
+## 15-4.0.0   2022-11-29
+
+* Update to Postgres 15.1
+* Add support for `MERGE` statements
+* Add support for `ALTER TABLE ALL IN TABLESPACE ...` statements
+* Add support for publication objects
+  - E.g. `CREATE PUBLICATION foo FOR TABLES IN SCHEMA CURRENT_SCHEMA`
+* Deparser now attempts to deparse `COPY` statements first using the old
+  Postgres 8.4-style syntax (e.g. `COPY foo FROM STDIN FREEZE CSV`).
+
+## 14-3.0.0   2022-11-17
+
+Special thanks to @wolfgangwalther and @tlisanti for most of the work done on this release.
+
+* Update to Postgres 14.6
+* Drop support for `?` parameter syntax
+* Update `fingerprint.json` to include newly added tests, regeneate tests
+
 ## 13-2.2.0   2022-11-02
 
 * Update to Postgres 13.8 patch release [#156](https://github.com/pganalyze/libpg_query/pull/156)

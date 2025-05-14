@@ -1,3 +1,13 @@
+-- directory paths are passed to us in environment variables
+\getenv abs_srcdir PG_ABS_SRCDIR
+
+CREATE TABLE testjsonb (
+       j jsonb
+);
+
+\set filename :abs_srcdir '/data/jsonb.data'
+COPY testjsonb FROM :'filename';
+
 -- Strings.
 SELECT '""'::jsonb;				-- OK.
 SELECT $$''$$::jsonb;			-- ERROR, single quotes are not allowed
@@ -58,6 +68,29 @@ SELECT 'truf'::jsonb;			-- ERROR, not a keyword
 SELECT 'trues'::jsonb;			-- ERROR, not a keyword
 SELECT ''::jsonb;				-- ERROR, no value
 SELECT '    '::jsonb;			-- ERROR, no value
+
+-- Multi-line JSON input to check ERROR reporting
+SELECT '{
+		"one": 1,
+		"two":"two",
+		"three":
+		true}'::jsonb; -- OK
+SELECT '{
+		"one": 1,
+		"two":,"two",  -- ERROR extraneous comma before field "two"
+		"three":
+		true}'::jsonb;
+SELECT '{
+		"one": 1,
+		"two":"two",
+		"averyveryveryveryveryveryveryveryveryverylongfieldname":}'::jsonb;
+-- ERROR missing value for last field
+
+-- test non-error-throwing input
+select pg_input_is_valid('{"a":true}', 'jsonb');
+select pg_input_is_valid('{"a":true', 'jsonb');
+select * from pg_input_error_info('{"a":true', 'jsonb');
+select * from pg_input_error_info('{"a":1e1000000}', 'jsonb');
 
 -- make sure jsonb is passed through json generators without being escaped
 SELECT array_to_json(ARRAY [jsonb '{"a":1}', jsonb '{"b":[2,3]}']);
@@ -380,6 +413,9 @@ SELECT jsonb_object_agg(name, type) FROM foo;
 INSERT INTO foo VALUES (999999, NULL, 'bar');
 SELECT jsonb_object_agg(name, type) FROM foo;
 
+-- edge case for parser
+SELECT jsonb_object_agg(DISTINCT 'a', 'abc');
+
 -- jsonb_object
 
 -- empty object, one dimension
@@ -642,6 +678,43 @@ SELECT rec FROM jsonb_populate_record(
 		row('x',3,'2012-12-31 15:30:56')::jbpop,NULL)::jsbrec,
 	'{"rec": {"a": "abc", "c": "01.02.2003", "x": 43.2}}'
 ) q;
+
+-- Tests to check soft-error support for populate_record_field()
+
+-- populate_scalar()
+create type jsb_char2 as (a char(2));
+select jsonb_populate_record_valid(NULL::jsb_char2, '{"a": "aaa"}');
+select * from jsonb_populate_record(NULL::jsb_char2, '{"a": "aaa"}') q;
+select jsonb_populate_record_valid(NULL::jsb_char2, '{"a": "aa"}');
+select * from jsonb_populate_record(NULL::jsb_char2, '{"a": "aa"}') q;
+
+-- populate_array()
+create type jsb_ia as (a int[]);
+create type jsb_ia2 as (a int[][]);
+select jsonb_populate_record_valid(NULL::jsb_ia, '{"a": 43.2}');
+select * from jsonb_populate_record(NULL::jsb_ia, '{"a": 43.2}') q;
+select jsonb_populate_record_valid(NULL::jsb_ia, '{"a": [1, 2]}');
+select * from jsonb_populate_record(NULL::jsb_ia, '{"a": [1, 2]}') q;
+select jsonb_populate_record_valid(NULL::jsb_ia2, '{"a": [[1], [2, 3]]}');
+select * from jsonb_populate_record(NULL::jsb_ia2, '{"a": [[1], [2, 3]]}') q;
+select jsonb_populate_record_valid(NULL::jsb_ia2, '{"a": [[1, 0], [2, 3]]}');
+select * from jsonb_populate_record(NULL::jsb_ia2, '{"a": [[1, 0], [2, 3]]}') q;
+
+-- populate_domain()
+create domain jsb_i_not_null as int not null;
+create domain jsb_i_gt_1 as int check (value > 1);
+create type jsb_i_not_null_rec as (a jsb_i_not_null);
+create type jsb_i_gt_1_rec as (a jsb_i_gt_1);
+select jsonb_populate_record_valid(NULL::jsb_i_not_null_rec, '{"a": null}');
+select * from jsonb_populate_record(NULL::jsb_i_not_null_rec, '{"a": null}') q;
+select jsonb_populate_record_valid(NULL::jsb_i_not_null_rec, '{"a": 1}');
+select * from jsonb_populate_record(NULL::jsb_i_not_null_rec, '{"a": 1}') q;
+select jsonb_populate_record_valid(NULL::jsb_i_gt_1_rec, '{"a": 1}');
+select * from jsonb_populate_record(NULL::jsb_i_gt_1_rec, '{"a": 1}') q;
+select jsonb_populate_record_valid(NULL::jsb_i_gt_1_rec, '{"a": 2}');
+select * from jsonb_populate_record(NULL::jsb_i_gt_1_rec, '{"a": 2}') q;
+drop type jsb_ia, jsb_ia2, jsb_char2, jsb_i_not_null_rec, jsb_i_gt_1_rec;
+drop domain jsb_i_not_null, jsb_i_gt_1;
 
 -- anonymous record type
 SELECT jsonb_populate_record(null::record, '{"x": 0, "y": 1}');
@@ -1177,7 +1250,7 @@ select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, null_value_treatment => 'retu
 select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, null_value_treatment => 'delete_key') as delete_key;
 select jsonb_set_lax('{"a":1,"b":2}', '{b}', null, null_value_treatment => 'use_json_null') as use_json_null;
 
-\pset null
+\pset null ''
 
 -- jsonb_insert
 select jsonb_insert('{"a": [0,1,2]}', '{a, 1}', '"new_value"');
@@ -1207,6 +1280,204 @@ select jsonb_insert('{"a": {"b": "value"}}', '{a, c}', '"new_value"', true);
 
 select jsonb_insert('{"a": {"b": "value"}}', '{a, b}', '"new_value"');
 select jsonb_insert('{"a": {"b": "value"}}', '{a, b}', '"new_value"', true);
+
+-- jsonb subscript
+select ('123'::jsonb)['a'];
+select ('123'::jsonb)[0];
+select ('123'::jsonb)[NULL];
+select ('{"a": 1}'::jsonb)['a'];
+select ('{"a": 1}'::jsonb)[0];
+select ('{"a": 1}'::jsonb)['not_exist'];
+select ('{"a": 1}'::jsonb)[NULL];
+select ('[1, "2", null]'::jsonb)['a'];
+select ('[1, "2", null]'::jsonb)[0];
+select ('[1, "2", null]'::jsonb)['1'];
+select ('[1, "2", null]'::jsonb)[1.0];
+select ('[1, "2", null]'::jsonb)[2];
+select ('[1, "2", null]'::jsonb)[3];
+select ('[1, "2", null]'::jsonb)[-2];
+select ('[1, "2", null]'::jsonb)[1]['a'];
+select ('[1, "2", null]'::jsonb)[1][0];
+select ('{"a": 1, "b": "c", "d": [1, 2, 3]}'::jsonb)['b'];
+select ('{"a": 1, "b": "c", "d": [1, 2, 3]}'::jsonb)['d'];
+select ('{"a": 1, "b": "c", "d": [1, 2, 3]}'::jsonb)['d'][1];
+select ('{"a": 1, "b": "c", "d": [1, 2, 3]}'::jsonb)['d']['a'];
+select ('{"a": {"a1": {"a2": "aaa"}}, "b": "bbb", "c": "ccc"}'::jsonb)['a']['a1'];
+select ('{"a": {"a1": {"a2": "aaa"}}, "b": "bbb", "c": "ccc"}'::jsonb)['a']['a1']['a2'];
+select ('{"a": {"a1": {"a2": "aaa"}}, "b": "bbb", "c": "ccc"}'::jsonb)['a']['a1']['a2']['a3'];
+select ('{"a": ["a1", {"b1": ["aaa", "bbb", "ccc"]}], "b": "bb"}'::jsonb)['a'][1]['b1'];
+select ('{"a": ["a1", {"b1": ["aaa", "bbb", "ccc"]}], "b": "bb"}'::jsonb)['a'][1]['b1'][2];
+
+-- slices are not supported
+select ('{"a": 1}'::jsonb)['a':'b'];
+select ('[1, "2", null]'::jsonb)[1:2];
+select ('[1, "2", null]'::jsonb)[:2];
+select ('[1, "2", null]'::jsonb)[1:];
+select ('[1, "2", null]'::jsonb)[:];
+
+create TEMP TABLE test_jsonb_subscript (
+       id int,
+       test_json jsonb
+);
+
+insert into test_jsonb_subscript values
+(1, '{}'), -- empty jsonb
+(2, '{"key": "value"}'); -- jsonb with data
+
+-- update empty jsonb
+update test_jsonb_subscript set test_json['a'] = '1' where id = 1;
+select * from test_jsonb_subscript;
+
+-- update jsonb with some data
+update test_jsonb_subscript set test_json['a'] = '1' where id = 2;
+select * from test_jsonb_subscript;
+
+-- replace jsonb
+update test_jsonb_subscript set test_json['a'] = '"test"';
+select * from test_jsonb_subscript;
+
+-- replace by object
+update test_jsonb_subscript set test_json['a'] = '{"b": 1}'::jsonb;
+select * from test_jsonb_subscript;
+
+-- replace by array
+update test_jsonb_subscript set test_json['a'] = '[1, 2, 3]'::jsonb;
+select * from test_jsonb_subscript;
+
+-- use jsonb subscription in where clause
+select * from test_jsonb_subscript where test_json['key'] = '"value"';
+select * from test_jsonb_subscript where test_json['key_doesnt_exists'] = '"value"';
+select * from test_jsonb_subscript where test_json['key'] = '"wrong_value"';
+
+-- NULL
+update test_jsonb_subscript set test_json[NULL] = '1';
+update test_jsonb_subscript set test_json['another_key'] = NULL;
+select * from test_jsonb_subscript;
+
+-- NULL as jsonb source
+insert into test_jsonb_subscript values (3, NULL);
+update test_jsonb_subscript set test_json['a'] = '1' where id = 3;
+select * from test_jsonb_subscript;
+
+update test_jsonb_subscript set test_json = NULL where id = 3;
+update test_jsonb_subscript set test_json[0] = '1';
+select * from test_jsonb_subscript;
+
+-- Fill the gaps logic
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '[0]');
+
+update test_jsonb_subscript set test_json[5] = '1';
+select * from test_jsonb_subscript;
+
+update test_jsonb_subscript set test_json[-4] = '1';
+select * from test_jsonb_subscript;
+
+update test_jsonb_subscript set test_json[-8] = '1';
+select * from test_jsonb_subscript;
+
+-- keep consistent values position
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '[]');
+
+update test_jsonb_subscript set test_json[5] = '1';
+select * from test_jsonb_subscript;
+
+-- create the whole path
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '{}');
+update test_jsonb_subscript set test_json['a'][0]['b'][0]['c'] = '1';
+select * from test_jsonb_subscript;
+
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '{}');
+update test_jsonb_subscript set test_json['a'][2]['b'][2]['c'][2] = '1';
+select * from test_jsonb_subscript;
+
+-- create the whole path with already existing keys
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '{"b": 1}');
+update test_jsonb_subscript set test_json['a'][0] = '2';
+select * from test_jsonb_subscript;
+
+-- the start jsonb is an object, first subscript is treated as a key
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '{}');
+update test_jsonb_subscript set test_json[0]['a'] = '1';
+select * from test_jsonb_subscript;
+
+-- the start jsonb is an array
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '[]');
+update test_jsonb_subscript set test_json[0]['a'] = '1';
+update test_jsonb_subscript set test_json[2]['b'] = '2';
+select * from test_jsonb_subscript;
+
+-- overwriting an existing path
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '{}');
+update test_jsonb_subscript set test_json['a']['b'][1] = '1';
+update test_jsonb_subscript set test_json['a']['b'][10] = '1';
+select * from test_jsonb_subscript;
+
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '[]');
+update test_jsonb_subscript set test_json[0][0][0] = '1';
+update test_jsonb_subscript set test_json[0][0][1] = '1';
+select * from test_jsonb_subscript;
+
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '{}');
+update test_jsonb_subscript set test_json['a']['b'][10] = '1';
+update test_jsonb_subscript set test_json['a'][10][10] = '1';
+select * from test_jsonb_subscript;
+
+-- an empty sub element
+
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '{"a": {}}');
+update test_jsonb_subscript set test_json['a']['b']['c'][2] = '1';
+select * from test_jsonb_subscript;
+
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '{"a": []}');
+update test_jsonb_subscript set test_json['a'][1]['c'][2] = '1';
+select * from test_jsonb_subscript;
+
+-- trying replace assuming a composite object, but it's an element or a value
+
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, '{"a": 1}');
+update test_jsonb_subscript set test_json['a']['b'] = '1';
+update test_jsonb_subscript set test_json['a']['b']['c'] = '1';
+update test_jsonb_subscript set test_json['a'][0] = '1';
+update test_jsonb_subscript set test_json['a'][0]['c'] = '1';
+update test_jsonb_subscript set test_json['a'][0][0] = '1';
+
+-- trying replace assuming a composite object, but it's a raw scalar
+
+delete from test_jsonb_subscript;
+insert into test_jsonb_subscript values (1, 'null');
+update test_jsonb_subscript set test_json[0] = '1';
+update test_jsonb_subscript set test_json[0][0] = '1';
+
+-- try some things with short-header and toasted subscript values
+
+drop table test_jsonb_subscript;
+create temp table test_jsonb_subscript (
+       id text,
+       test_json jsonb
+);
+
+insert into test_jsonb_subscript values('foo', '{"foo": "bar"}');
+insert into test_jsonb_subscript
+  select s, ('{"' || s || '": "bar"}')::jsonb from repeat('xyzzy', 500) s;
+select length(id), test_json[id] from test_jsonb_subscript;
+update test_jsonb_subscript set test_json[id] = '"baz"';
+select length(id), test_json[id] from test_jsonb_subscript;
+\x
+table test_jsonb_subscript;
+\x
 
 -- jsonb to tsvector
 select to_tsvector('{"a": "aaa bbb ddd ccc", "b": ["eee fff ggg"], "c": {"d": "hhh iii"}}'::jsonb);

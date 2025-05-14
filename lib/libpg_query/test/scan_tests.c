@@ -1,4 +1,4 @@
-const char* tests[] = {
+const char* const tests[] = {
   "SELECT 1",
     "SELECT = SELECT, RESERVED_KEYWORD\n"
     "1 = ICONST, NO_KEYWORD\n",
@@ -17,9 +17,6 @@ const char* tests[] = {
   "SELECT $1",
     "SELECT = SELECT, RESERVED_KEYWORD\n"
     "$1 = PARAM, NO_KEYWORD\n",
-  "SELECT ?",
-    "SELECT = SELECT, RESERVED_KEYWORD\n"
-    "? = ASCII_63, NO_KEYWORD\n",
 	"SELECT update AS left /* comment */ FROM between",
     "SELECT = SELECT, RESERVED_KEYWORD\n"
     "update = UPDATE, UNRESERVED_KEYWORD\n"
@@ -49,7 +46,7 @@ const char* tests[] = {
     "\"xy\" = IDENT, NO_KEYWORD\n"
     ", = ASCII_44, NO_KEYWORD\n"
     "abc = IDENT, NO_KEYWORD\n",
-  "SELECT '/*not a comment*/', E'\\134', B'10', X'12', -Infinity, U&\"d!0061t!+000061\" UESCAPE '!'",
+  "SELECT '/*not a comment*/', E'\\134', B'10', X'12', -Infinity, U&\"d!0061t!+000061\" UESCAPE '!', U&'d!0061t!+000061' UESCAPE '!'",
     "SELECT = SELECT, RESERVED_KEYWORD\n"
     "'/*not a comment*/' = SCONST, NO_KEYWORD\n"
     ", = ASCII_44, NO_KEYWORD\n"
@@ -62,7 +59,11 @@ const char* tests[] = {
     "- = ASCII_45, NO_KEYWORD\n"
     "Infinity = IDENT, NO_KEYWORD\n"
     ", = ASCII_44, NO_KEYWORD\n"
-    "U = UIDENT, NO_KEYWORD\n"
+    "U&\"d!0061t!+000061\" = UIDENT, NO_KEYWORD\n"
+    "UESCAPE = UESCAPE, UNRESERVED_KEYWORD\n"
+    "'!' = SCONST, NO_KEYWORD\n"
+    ", = ASCII_44, NO_KEYWORD\n"
+    "U&'d!0061t!+000061' = USCONST, NO_KEYWORD\n"
     "UESCAPE = UESCAPE, UNRESERVED_KEYWORD\n"
     "'!' = SCONST, NO_KEYWORD\n",
   "SELECT 'a'/*;*/'b'; SELECT ';';",
@@ -90,7 +91,11 @@ const char* tests[] = {
     "; = ASCII_59, NO_KEYWORD\n"
     "SELECT = SELECT, RESERVED_KEYWORD\n"
     "2 = ICONST, NO_KEYWORD\n"
-    ") = ASCII_41, NO_KEYWORD\n"
+    ") = ASCII_41, NO_KEYWORD\n",
+  "SELECT $identifier",
+    "SELECT = SELECT, RESERVED_KEYWORD\n"
+    "$ = ASCII_36, NO_KEYWORD\n"
+    "identifier = IDENT, NO_KEYWORD\n",
 };
 
-size_t testsCount = 12;
+const size_t testsCount = sizeof(tests)/sizeof(*tests)/2;

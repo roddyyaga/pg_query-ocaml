@@ -4,7 +4,7 @@
  *	  Lightweight lock manager
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/lwlock.h
@@ -19,10 +19,19 @@
 #endif
 
 #include "port/atomics.h"
+#include "storage/lwlocknames.h"
 #include "storage/proclist_types.h"
-#include "storage/s_lock.h"
 
 struct PGPROC;
+
+/* what state of the wait process is a backend in */
+typedef enum LWLockWaitState
+{
+	LW_WS_NOT_WAITING,			/* not currently waiting / woken up */
+	LW_WS_WAITING,				/* currently waiting */
+	LW_WS_PENDING_WAKEUP,		/* removed from waitlist, but not yet
+								 * signalled */
+}			LWLockWaitState;
 
 /*
  * Code outside of lwlock.c should not manipulate the contents of this
@@ -49,29 +58,11 @@ typedef struct LWLock
  * even more padding so that each LWLock takes up an entire cache line; this is
  * useful, for example, in the main LWLock array, where the overall number of
  * locks is small but some are heavily contended.
- *
- * When allocating a tranche that contains data other than LWLocks, it is
- * probably best to include a bare LWLock and then pad the resulting structure
- * as necessary for performance.  For an array that contains only LWLocks,
- * LWLockMinimallyPadded can be used for cases where we just want to ensure
- * that we don't cross cache line boundaries within a single lock, while
- * LWLockPadded can be used for cases where we want each lock to be an entire
- * cache line.
- *
- * An LWLockMinimallyPadded might contain more than the absolute minimum amount
- * of padding required to keep a lock from crossing a cache line boundary,
- * because an unpadded LWLock will normally fit into 16 bytes.  We ignore that
- * possibility when determining the minimal amount of padding.  Older releases
- * had larger LWLocks, so 32 really was the minimum, and packing them in
- * tighter might hurt performance.
- *
- * LWLOCK_MINIMAL_SIZE should be 32 on basically all common platforms, but
- * because pg_atomic_uint32 is more than 4 bytes on some obscure platforms, we
- * allow for the possibility that it might be 64.  Even on those platforms,
- * we probably won't exceed 32 bytes unless LOCK_DEBUG is defined.
  */
 #define LWLOCK_PADDED_SIZE	PG_CACHE_LINE_SIZE
-#define LWLOCK_MINIMAL_SIZE (sizeof(LWLock) <= 32 ? 32 : 64)
+
+StaticAssertDecl(sizeof(LWLock) <= LWLOCK_PADDED_SIZE,
+				 "Miscalculated LWLock padding");
 
 /* LWLock, padded to a full cache line size */
 typedef union LWLockPadded
@@ -79,13 +70,6 @@ typedef union LWLockPadded
 	LWLock		lock;
 	char		pad[LWLOCK_PADDED_SIZE];
 } LWLockPadded;
-
-/* LWLock, minimally padded */
-typedef union LWLockMinimallyPadded
-{
-	LWLock		lock;
-	char		pad[LWLOCK_MINIMAL_SIZE];
-} LWLockMinimallyPadded;
 
 extern PGDLLIMPORT LWLockPadded *MainLWLockArray;
 
@@ -98,9 +82,6 @@ typedef struct NamedLWLockTranche
 
 extern PGDLLIMPORT NamedLWLockTranche *NamedLWLockTrancheArray;
 extern PGDLLIMPORT int NamedLWLockTrancheRequests;
-
-/* Names for fixed lwlocks */
-#include "storage/lwlocknames.h"
 
 /*
  * It's a bit odd to declare NUM_BUFFER_PARTITIONS and NUM_LOCK_PARTITIONS
@@ -132,28 +113,28 @@ typedef enum LWLockMode
 {
 	LW_EXCLUSIVE,
 	LW_SHARED,
-	LW_WAIT_UNTIL_FREE			/* A special mode used in PGPROC->lwWaitMode,
+	LW_WAIT_UNTIL_FREE,			/* A special mode used in PGPROC->lwWaitMode,
 								 * when waiting for lock to become free. Not
 								 * to be used as LWLockAcquire argument */
 } LWLockMode;
 
 
 #ifdef LOCK_DEBUG
-extern bool Trace_lwlocks;
+extern PGDLLIMPORT bool Trace_lwlocks;
 #endif
 
 extern bool LWLockAcquire(LWLock *lock, LWLockMode mode);
 extern bool LWLockConditionalAcquire(LWLock *lock, LWLockMode mode);
 extern bool LWLockAcquireOrWait(LWLock *lock, LWLockMode mode);
 extern void LWLockRelease(LWLock *lock);
-extern void LWLockReleaseClearVar(LWLock *lock, uint64 *valptr, uint64 val);
+extern void LWLockReleaseClearVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 val);
 extern void LWLockReleaseAll(void);
 extern bool LWLockHeldByMe(LWLock *lock);
 extern bool LWLockAnyHeldByMe(LWLock *lock, int nlocks, size_t stride);
 extern bool LWLockHeldByMeInMode(LWLock *lock, LWLockMode mode);
 
-extern bool LWLockWaitForVar(LWLock *lock, uint64 *valptr, uint64 oldval, uint64 *newval);
-extern void LWLockUpdateVar(LWLock *lock, uint64 *valptr, uint64 value);
+extern bool LWLockWaitForVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 oldval, uint64 *newval);
+extern void LWLockUpdateVar(LWLock *lock, pg_atomic_uint64 *valptr, uint64 val);
 
 extern Size LWLockShmemSize(void);
 extern void CreateLWLocks(void);
@@ -204,7 +185,6 @@ typedef enum BuiltinTrancheIds
 	LWTRANCHE_SERIAL_BUFFER,
 	LWTRANCHE_WAL_INSERT,
 	LWTRANCHE_BUFFER_CONTENT,
-	LWTRANCHE_BUFFER_IO,
 	LWTRANCHE_REPLICATION_ORIGIN_STATE,
 	LWTRANCHE_REPLICATION_SLOT_IO,
 	LWTRANCHE_LOCK_FASTPATH,
@@ -220,7 +200,22 @@ typedef enum BuiltinTrancheIds
 	LWTRANCHE_SHARED_TIDBITMAP,
 	LWTRANCHE_PARALLEL_APPEND,
 	LWTRANCHE_PER_XACT_PREDICATE_LIST,
-	LWTRANCHE_FIRST_USER_DEFINED
+	LWTRANCHE_PGSTATS_DSA,
+	LWTRANCHE_PGSTATS_HASH,
+	LWTRANCHE_PGSTATS_DATA,
+	LWTRANCHE_LAUNCHER_DSA,
+	LWTRANCHE_LAUNCHER_HASH,
+	LWTRANCHE_DSM_REGISTRY_DSA,
+	LWTRANCHE_DSM_REGISTRY_HASH,
+	LWTRANCHE_COMMITTS_SLRU,
+	LWTRANCHE_MULTIXACTMEMBER_SLRU,
+	LWTRANCHE_MULTIXACTOFFSET_SLRU,
+	LWTRANCHE_NOTIFY_SLRU,
+	LWTRANCHE_SERIAL_SLRU,
+	LWTRANCHE_SUBTRANS_SLRU,
+	LWTRANCHE_XACT_SLRU,
+	LWTRANCHE_PARALLEL_VACUUM_DSA,
+	LWTRANCHE_FIRST_USER_DEFINED,
 }			BuiltinTrancheIds;
 
 /*

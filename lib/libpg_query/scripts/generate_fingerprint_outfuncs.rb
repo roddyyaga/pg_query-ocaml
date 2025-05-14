@@ -65,7 +65,7 @@ class Generator
     _fingerprintString(ctx, "%<name>s");
 
     hash = XXH3_64bits_digest(ctx->xxh_state);
-    _fingerprintNode(ctx, &node->%<name>s, node, "%<name>s", depth + 1);
+    _fingerprintNode(ctx, %<cast>s&node->%<name>s, node, "%<name>s", depth + 1);
     if (hash == XXH3_64bits_digest(ctx->xxh_state)) {
       XXH3_copyState(ctx->xxh_state, prev);
       if (ctx->write_tokens)
@@ -85,7 +85,7 @@ class Generator
     _fingerprintString(ctx, "%<name>s");
 
     hash = XXH3_64bits_digest(ctx->xxh_state);
-    _fingerprintNode(ctx, node->%<name>s, node, "%<name>s", depth + 1);
+    _fingerprintNode(ctx, %<cast>snode->%<name>s, node, "%<name>s", depth + 1);
     if (hash == XXH3_64bits_digest(ctx->xxh_state)) {
       XXH3_copyState(ctx->xxh_state, prev);
       if (ctx->write_tokens)
@@ -155,6 +155,16 @@ class Generator
 
   EOL
 
+  FINGERPRINT_UINT64 = <<-EOL
+  if (node->%<name>s != 0) {
+    char buffer[50];
+    sprintf(buffer, UINT64_FORMAT, node->%<name>s);
+    _fingerprintString(ctx, "%<name>s");
+    _fingerprintString(ctx, buffer);
+  }
+
+  EOL
+
   FINGERPRINT_FLOAT = <<-EOL
   if (node->%<name>s != 0) {
     char buffer[50];
@@ -183,9 +193,9 @@ class Generator
   EOL
 
   FINGERPRINT_STRING = <<-EOL
-  if (strlen(node->%<name>s) > 0) {
+  if (strlen(node->%<name>s->sval) > 0) {
     _fingerprintString(ctx, "%<name>s");
-    _fingerprintString(ctx, node->%<name>s);
+    _fingerprintString(ctx, node->%<name>s->sval);
   }
 
   EOL
@@ -200,12 +210,12 @@ class Generator
 
   FINGERPRINT_INT_ARRAY = <<-EOL
   if (true) {
-    int x;
+    int x = -1;
     Bitmapset	*bms = bms_copy(node->%<name>s);
 
     _fingerprintString(ctx, "%<name>s");
 
-  	while ((x = bms_first_member(bms)) >= 0) {
+  	while ((x = bms_next_member(bms, x)) >= 0) {
       char buffer[50];
       sprintf(buffer, "%%d", x);
       _fingerprintString(ctx, buffer);
@@ -256,11 +266,15 @@ class Generator
     ['ClosePortalStmt', 'portalname'] => :skip,
     ['RawStmt', 'stmt_len'] => :skip,
     ['RawStmt', 'stmt_location'] => :skip,
+    ['JsonTablePath', 'value'] => :skip,
+    ['JsonTablePathSpec', 'name_location'] => :skip,
+    ['JsonTablePathSpec', 'location'] => :skip,
   }
-  INT_TYPES = ['bits32', 'uint32', 'int', 'int32', 'uint16', 'int16', 'Oid', 'Index', 'AclMode', 'AttrNumber', 'SubTransactionId']
-  LONG_INT_TYPES = ['long', 'uint64']
+  INT_TYPES = ['bits32', 'uint32', 'int', 'int32', 'uint16', 'int16', 'Oid', 'Index', 'AttrNumber', 'SubTransactionId', 'RelFileNumber', 'ParseLoc']
+  LONG_INT_TYPES = ['long']
+  UINT64_TYPES = ['uint64', 'AclMode']
   INT_ARRAY_TYPES = ['Bitmapset*', 'Bitmapset', 'Relids']
-  FLOAT_TYPES = ['Cost', 'double']
+  FLOAT_TYPES = ['Cost', 'double', 'Cardinality']
 
   IGNORE_FOR_GENERATOR = ['Integer', 'Float', 'String', 'BitString', 'List']
 
@@ -295,9 +309,13 @@ class Generator
             # when '[]Node'
             #  fingerprint_def += format(FINGERPRINT_NODE_ARRAY, name: name)
             when 'Node'
-              fingerprint_def += format(FINGERPRINT_NODE, name: name)
+              fingerprint_def += format(FINGERPRINT_NODE, name: name, cast: '')
             when 'Node*', 'Expr*'
-              fingerprint_def += format(FINGERPRINT_NODE_PTR, name: name)
+              fingerprint_def += format(FINGERPRINT_NODE_PTR, name: name, cast: '')
+            when 'JsonTablePlan'
+              fingerprint_def += format(FINGERPRINT_NODE, name: name, cast: '(Node*)')
+            when 'JsonTablePlan*'
+              fingerprint_def += format(FINGERPRINT_NODE_PTR, name: name, cast: '(Node*)')
             when 'List*'
               fingerprint_def += format(FINGERPRINT_LIST, name: name)
             when 'CreateStmt'
@@ -307,7 +325,7 @@ class Generator
               fingerprint_def += format(FINGERPRINT_CHAR, name: name)
             when 'char*'
               fingerprint_def += format(FINGERPRINT_CHAR_PTR, name: name)
-            when 'string'
+            when 'String*'
               fingerprint_def += format(FINGERPRINT_STRING, name: name)
             when 'bool'
               fingerprint_def += format(FINGERPRINT_BOOL, name: name)
@@ -317,6 +335,8 @@ class Generator
               fingerprint_def += format(FINGERPRINT_INT, name: name)
             when *LONG_INT_TYPES
               fingerprint_def += format(FINGERPRINT_LONG_INT, name: name)
+            when *UINT64_TYPES
+              fingerprint_def += format(FINGERPRINT_UINT64, name: name)
             when *INT_ARRAY_TYPES
               fingerprint_def += format(FINGERPRINT_INT_ARRAY, name: name)
             when *FLOAT_TYPES
@@ -324,7 +344,6 @@ class Generator
             else
               if field_type.end_with?('*') && @nodetypes.include?(field_type[0..-2])
                 typename = field_type[0..-2]
-                typename = 'Node' if typename == 'Value'
                 fingerprint_def += format(FINGERPRINT_SPECIFIC_NODE_PTR, name: name, typename: typename)
               elsif @all_known_enums.include?(field_type)
                 fingerprint_def += format(FINGERPRINT_ENUM, name: name, typename: field_type)
@@ -381,8 +400,8 @@ class Generator
       conds += "  break;\n"
     end
 
-    File.write('./src/pg_query_fingerprint_defs.c', defs)
-    File.write('./src/pg_query_fingerprint_conds.c', conds)
+    File.write('./src/include/pg_query_fingerprint_defs.c', defs)
+    File.write('./src/include/pg_query_fingerprint_conds.c', conds)
   end
 end
 

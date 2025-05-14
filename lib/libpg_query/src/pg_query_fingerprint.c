@@ -1,5 +1,3 @@
-// Ensure we have asprintf's definition on glibc-based platforms to avoid compiler warnings
-#define _GNU_SOURCE
 #include <stdio.h>
 
 #include "pg_query.h"
@@ -93,34 +91,48 @@ _fingerprintString(FingerprintContext *ctx, const char *str)
 }
 
 static void
-_fingerprintInteger(FingerprintContext *ctx, const Value *node)
+_fingerprintInteger(FingerprintContext *ctx, const union ValUnion *value)
 {
-	if (node->val.ival != 0) {
+	if (value->ival.ival != 0) {
 		_fingerprintString(ctx, "Integer");
 		_fingerprintString(ctx, "ival");
 		char buffer[50];
-		sprintf(buffer, "%d", node->val.ival);
+		sprintf(buffer, "%d", value->ival.ival);
 		_fingerprintString(ctx, buffer);
 	}
 }
 
 static void
-_fingerprintFloat(FingerprintContext *ctx, const Value *node)
+_fingerprintFloat(FingerprintContext *ctx, const union ValUnion *value)
 {
-	if (node->val.str != NULL) {
+	if (value->fval.fval != NULL) {
+		// NB: We output `str` here intentionally, to match the output format from libpg_query 14
+		// and below. This results in stable fingerprints, despite the field name being changed in
+		// PG15 to `fval`.
 		_fingerprintString(ctx, "Float");
 		_fingerprintString(ctx, "str");
-		_fingerprintString(ctx, node->val.str);
+		_fingerprintString(ctx, value->fval.fval);
 	}
 }
 
 static void
-_fingerprintBitString(FingerprintContext *ctx, const Value *node)
+_fingerprintBoolean(FingerprintContext *ctx, const union ValUnion *value)
 {
-	if (node->val.str != NULL) {
+	_fingerprintString(ctx, "Boolean");
+	_fingerprintString(ctx, "boolval");
+	_fingerprintString(ctx, value->boolval.boolval ? "true" : "false");
+}
+
+static void
+_fingerprintBitString(FingerprintContext *ctx, const union ValUnion *value)
+{
+	if (value->bsval.bsval != NULL) {
+		// NB: We output `str` here intentionally, to match the output format from libpg_query 14
+		// and below. This results in stable fingerprints, despite the field name being changed in
+		// PG15 to `bsval`.
 		_fingerprintString(ctx, "BitString");
 		_fingerprintString(ctx, "str");
-		_fingerprintString(ctx, node->val.str);
+		_fingerprintString(ctx, value->bsval.bsval);
 	}
 }
 
@@ -272,10 +284,16 @@ _fingerprintNode(FingerprintContext *ctx, const void *obj, const void *parent, c
 		case T_Float:
 			_fingerprintFloat(ctx, obj);
 			break;
+		case T_Boolean:
+			_fingerprintBoolean(ctx, obj);
+			break;
 		case T_String:
+			// NB: We output `str` here intentionally, to match the output format from libpg_query
+			// 14 and below. This results in stable fingerprints, despite the field name being
+			// changed in PG15 to `sval`.
 			_fingerprintString(ctx, "String");
 			_fingerprintString(ctx, "str");
-			_fingerprintString(ctx, ((Value*) obj)->val.str);
+			_fingerprintString(ctx, ((union ValUnion*) obj)->sval.sval);
 			break;
 		case T_BitString:
 			_fingerprintBitString(ctx, obj);
@@ -306,7 +324,7 @@ uint64_t pg_query_fingerprint_node(const void *node)
 	return result;
 }
 
-PgQueryFingerprintResult pg_query_fingerprint_with_opts(const char* input, bool printTokens)
+PgQueryFingerprintResult pg_query_fingerprint_with_opts(const char* input, int parser_options, bool printTokens)
 {
 	MemoryContext ctx = NULL;
 	PgQueryInternalParsetreeAndError parsetree_and_error;
@@ -314,7 +332,7 @@ PgQueryFingerprintResult pg_query_fingerprint_with_opts(const char* input, bool 
 
 	ctx = pg_query_enter_memory_context();
 
-	parsetree_and_error = pg_query_raw_parse(input);
+	parsetree_and_error = pg_query_raw_parse(input, parser_options);
 
 	// These are all malloc-ed and will survive exiting the memory context, the caller is responsible to free them now
 	result.stderr_buffer = parsetree_and_error.stderr_buffer;
@@ -349,12 +367,13 @@ PgQueryFingerprintResult pg_query_fingerprint_with_opts(const char* input, bool 
 		_fingerprintFreeContext(&ctx);
 
 		XXH64_canonicalFromHash(&chash, result.fingerprint);
-		int err = asprintf(&result.fingerprint_str, "%02x%02x%02x%02x%02x%02x%02x%02x",
+		result.fingerprint_str = malloc(17 * sizeof(char));
+		int n = snprintf(result.fingerprint_str, 17, "%02x%02x%02x%02x%02x%02x%02x%02x",
 						   chash.digest[0], chash.digest[1], chash.digest[2], chash.digest[3],
 						   chash.digest[4], chash.digest[5], chash.digest[6], chash.digest[7]);
-		if (err == -1) {
+		if (n < 0 || n >= 17) {
 			PgQueryError* error = malloc(sizeof(PgQueryError));
-			error->message = strdup("Failed to output fingerprint string due to asprintf failure");
+			error->message = strdup("Failed to output fingerprint string due to snprintf failure");
 			result.error = error;
 		}
 	}
@@ -366,7 +385,12 @@ PgQueryFingerprintResult pg_query_fingerprint_with_opts(const char* input, bool 
 
 PgQueryFingerprintResult pg_query_fingerprint(const char* input)
 {
-	return pg_query_fingerprint_with_opts(input, false);
+	return pg_query_fingerprint_with_opts(input, PG_QUERY_PARSE_DEFAULT, false);
+}
+
+PgQueryFingerprintResult pg_query_fingerprint_opts(const char* input, int parser_options)
+{
+	return pg_query_fingerprint_with_opts(input, parser_options, false);
 }
 
 void pg_query_free_fingerprint_result(PgQueryFingerprintResult result)

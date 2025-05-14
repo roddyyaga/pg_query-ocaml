@@ -216,10 +216,10 @@ SET ROLE regress_user_mvtest;
 -- duplicate all the aliases used in those queries
 CREATE TABLE mvtest_foo_data AS SELECT i,
   i+1 AS tid,
-  md5(random()::text) AS mv,
-  md5(random()::text) AS newdata,
-  md5(random()::text) AS newdata2,
-  md5(random()::text) AS diff
+  fipshash(random()::text) AS mv,
+  fipshash(random()::text) AS newdata,
+  fipshash(random()::text) AS newdata2,
+  fipshash(random()::text) AS diff
   FROM generate_series(1, 10) i;
 CREATE MATERIALIZED VIEW mvtest_mv_foo AS SELECT * FROM mvtest_foo_data;
 CREATE MATERIALIZED VIEW mvtest_mv_foo AS SELECT * FROM mvtest_foo_data;
@@ -230,6 +230,25 @@ REFRESH MATERIALIZED VIEW mvtest_mv_foo;
 REFRESH MATERIALIZED VIEW CONCURRENTLY mvtest_mv_foo;
 DROP OWNED BY regress_user_mvtest CASCADE;
 DROP ROLE regress_user_mvtest;
+
+-- Concurrent refresh requires a unique index on the materialized
+-- view. Test what happens if it's dropped during the refresh.
+SET search_path = mvtest_mvschema, public;
+CREATE OR REPLACE FUNCTION mvtest_drop_the_index()
+  RETURNS bool AS $$
+BEGIN
+  EXECUTE 'DROP INDEX IF EXISTS mvtest_mvschema.mvtest_drop_idx';
+  RETURN true;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE MATERIALIZED VIEW drop_idx_matview AS
+  SELECT 1 as i WHERE mvtest_drop_the_index();
+
+CREATE UNIQUE INDEX mvtest_drop_idx ON drop_idx_matview (i);
+REFRESH MATERIALIZED VIEW CONCURRENTLY drop_idx_matview;
+DROP MATERIALIZED VIEW drop_idx_matview; -- clean up
+RESET search_path;
 
 -- make sure that create WITH NO DATA works via SPI
 BEGIN;
@@ -244,3 +263,54 @@ SELECT mvtest_func();
 SELECT * FROM mvtest1;
 SELECT * FROM mvtest2;
 ROLLBACK;
+
+-- INSERT privileges if relation owner is not allowed to insert.
+CREATE SCHEMA matview_schema;
+CREATE USER regress_matview_user;
+ALTER DEFAULT PRIVILEGES FOR ROLE regress_matview_user
+  REVOKE INSERT ON TABLES FROM regress_matview_user;
+GRANT ALL ON SCHEMA matview_schema TO public;
+
+SET SESSION AUTHORIZATION regress_matview_user;
+CREATE MATERIALIZED VIEW matview_schema.mv_withdata1 (a) AS
+  SELECT generate_series(1, 10) WITH DATA;
+EXPLAIN (ANALYZE, COSTS OFF, SUMMARY OFF, TIMING OFF)
+  CREATE MATERIALIZED VIEW matview_schema.mv_withdata2 (a) AS
+  SELECT generate_series(1, 10) WITH DATA;
+REFRESH MATERIALIZED VIEW matview_schema.mv_withdata2;
+CREATE MATERIALIZED VIEW matview_schema.mv_nodata1 (a) AS
+  SELECT generate_series(1, 10) WITH NO DATA;
+EXPLAIN (ANALYZE, COSTS OFF, SUMMARY OFF, TIMING OFF)
+  CREATE MATERIALIZED VIEW matview_schema.mv_nodata2 (a) AS
+  SELECT generate_series(1, 10) WITH NO DATA;
+REFRESH MATERIALIZED VIEW matview_schema.mv_nodata2;
+RESET SESSION AUTHORIZATION;
+
+ALTER DEFAULT PRIVILEGES FOR ROLE regress_matview_user
+  GRANT INSERT ON TABLES TO regress_matview_user;
+
+DROP SCHEMA matview_schema CASCADE;
+DROP USER regress_matview_user;
+
+-- CREATE MATERIALIZED VIEW ... IF NOT EXISTS
+CREATE MATERIALIZED VIEW matview_ine_tab AS SELECT 1;
+CREATE MATERIALIZED VIEW matview_ine_tab AS SELECT 1 / 0; -- error
+CREATE MATERIALIZED VIEW IF NOT EXISTS matview_ine_tab AS
+  SELECT 1 / 0; -- ok
+CREATE MATERIALIZED VIEW matview_ine_tab AS
+  SELECT 1 / 0 WITH NO DATA; -- error
+CREATE MATERIALIZED VIEW IF NOT EXISTS matview_ine_tab AS
+  SELECT 1 / 0 WITH NO DATA; -- ok
+EXPLAIN (ANALYZE, COSTS OFF, SUMMARY OFF, TIMING OFF)
+  CREATE MATERIALIZED VIEW matview_ine_tab AS
+    SELECT 1 / 0; -- error
+EXPLAIN (ANALYZE, COSTS OFF, SUMMARY OFF, TIMING OFF)
+  CREATE MATERIALIZED VIEW IF NOT EXISTS matview_ine_tab AS
+    SELECT 1 / 0; -- ok
+EXPLAIN (ANALYZE, COSTS OFF, SUMMARY OFF, TIMING OFF)
+  CREATE MATERIALIZED VIEW matview_ine_tab AS
+    SELECT 1 / 0 WITH NO DATA; -- error
+EXPLAIN (ANALYZE, COSTS OFF, SUMMARY OFF, TIMING OFF)
+  CREATE MATERIALIZED VIEW IF NOT EXISTS matview_ine_tab AS
+    SELECT 1 / 0 WITH NO DATA; -- ok
+DROP MATERIALIZED VIEW matview_ine_tab;

@@ -21,7 +21,7 @@
  * (null-terminated text) or arbitrary binary data.  All storage is allocated
  * with palloc() (falling back to malloc in frontend code).
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *	  src/common/stringinfo.c
@@ -74,10 +74,16 @@ initStringInfo(StringInfo str)
  *
  * Reset the StringInfo: the data buffer remains valid, but its
  * previous content, if any, is cleared.
+ *
+ * Read-only StringInfos as initialized by initReadOnlyStringInfo cannot be
+ * reset.
  */
 void
 resetStringInfo(StringInfo str)
 {
+	/* don't allow resets of read-only StringInfos */
+	Assert(str->maxlen != 0);
+
 	str->data[0] = '\0';
 	str->len = 0;
 	str->cursor = 0;
@@ -215,8 +221,8 @@ appendStringInfoSpaces(StringInfo str, int count)
 		enlargeStringInfo(str, count);
 
 		/* OK, append the spaces */
-		while (--count >= 0)
-			str->data[str->len++] = ' ';
+		memset(&str->data[str->len], ' ', count);
+		str->len += count;
 		str->data[str->len] = '\0';
 	}
 }
@@ -228,7 +234,7 @@ appendStringInfoSpaces(StringInfo str, int count)
  * if necessary. Ensures that a trailing null byte is present.
  */
 void
-appendBinaryStringInfo(StringInfo str, const char *data, int datalen)
+appendBinaryStringInfo(StringInfo str, const void *data, int datalen)
 {
 	Assert(str != NULL);
 
@@ -276,6 +282,9 @@ void
 enlargeStringInfo(StringInfo str, int needed)
 {
 	int			newlen;
+
+	/* validate this is not a read-only StringInfo */
+	Assert(str->maxlen != 0);
 
 	/*
 	 * Guard against out-of-range "needed" values.  Without this, we can get
@@ -334,3 +343,11 @@ enlargeStringInfo(StringInfo str, int needed)
 
 	str->maxlen = newlen;
 }
+
+/*
+ * destroyStringInfo
+ *
+ * Frees a StringInfo and its buffer (opposite of makeStringInfo()).
+ * This must only be called on palloc'd StringInfos.
+ */
+

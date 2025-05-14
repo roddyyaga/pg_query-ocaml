@@ -2,7 +2,7 @@
  * jit.h
  *	  Provider independent JIT infrastructure.
  *
- * Copyright (c) 2016-2020, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2024, PostgreSQL Global Development Group
  *
  * src/include/jit/jit.h
  *
@@ -32,6 +32,9 @@ typedef struct JitInstrumentation
 	/* accumulated time to generate code */
 	instr_time	generation_counter;
 
+	/* accumulated time to deform tuples, included into generation_counter */
+	instr_time	deform_counter;
+
 	/* accumulated time for inlining */
 	instr_time	inlining_counter;
 
@@ -56,14 +59,12 @@ typedef struct JitContext
 	/* see PGJIT_* above */
 	int			flags;
 
-	ResourceOwner resowner;
-
 	JitInstrumentation instr;
 } JitContext;
 
 typedef struct JitProviderCallbacks JitProviderCallbacks;
 
-extern void _PG_jit_provider_init(JitProviderCallbacks *cb);
+extern PGDLLEXPORT void _PG_jit_provider_init(JitProviderCallbacks *cb);
 typedef void (*JitProviderInit) (JitProviderCallbacks *cb);
 typedef void (*JitProviderResetAfterErrorCB) (void);
 typedef void (*JitProviderReleaseContextCB) (JitContext *context);
@@ -79,16 +80,16 @@ struct JitProviderCallbacks
 
 
 /* GUCs */
-extern bool jit_enabled;
-extern char *jit_provider;
-extern bool jit_debugging_support;
-extern bool jit_dump_bitcode;
-extern bool jit_expressions;
-extern bool jit_profiling_support;
-extern bool jit_tuple_deforming;
-extern double jit_above_cost;
-extern double jit_inline_above_cost;
-extern double jit_optimize_above_cost;
+extern PGDLLIMPORT bool jit_enabled;
+extern PGDLLIMPORT char *jit_provider;
+extern PGDLLIMPORT bool jit_debugging_support;
+extern PGDLLIMPORT bool jit_dump_bitcode;
+extern PGDLLIMPORT bool jit_expressions;
+extern PGDLLIMPORT bool jit_profiling_support;
+extern PGDLLIMPORT bool jit_tuple_deforming;
+extern PGDLLIMPORT double jit_above_cost;
+extern PGDLLIMPORT double jit_inline_above_cost;
+extern PGDLLIMPORT double jit_optimize_above_cost;
 
 
 extern void jit_reset_after_error(void);

@@ -1,0 +1,23 @@
+diff --git a/src/backend/parser/scan.l b/src/backend/parser/scan.l
+index c97db94611..a0212898f9 100644
+--- a/src/backend/parser/scan.l
++++ b/src/backend/parser/scan.l
+@@ -435,7 +435,6 @@ param			\${decdigit}+
+ integer_junk	{decinteger}{identifier}
+ numeric_junk	{numeric}{identifier}
+ real_junk		{real}{identifier}
+-param_junk		\${decdigit}+{identifier}
+ 
+ other			.
+ 
+@@ -1010,10 +1009,6 @@ other			.
+ 					yylval->ival = atol(yytext + 1);
+ 					return PARAM;
+ 				}
+-{param_junk}	{
+-					SET_YYLLOC();
+-					yyerror("trailing junk after parameter");
+-				}
+ 
+ {decinteger}	{
+ 					SET_YYLLOC();

@@ -4,7 +4,7 @@
  *	  POSTGRES generalized index access method definitions.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/access/genam.h
@@ -38,12 +38,13 @@ typedef struct IndexBuildResult
  *
  * num_heap_tuples is accurate only when estimated_count is false;
  * otherwise it's just an estimate (currently, the estimate is the
- * prior value of the relation's pg_class.reltuples field).  It will
- * always just be an estimate during ambulkdelete.
+ * prior value of the relation's pg_class.reltuples field, so it could
+ * even be -1).  It will always just be an estimate during ambulkdelete.
  */
 typedef struct IndexVacuumInfo
 {
 	Relation	index;			/* the index being vacuumed */
+	Relation	heaprel;		/* the heap relation the index belongs to */
 	bool		analyze_only;	/* ANALYZE (without any actual vacuum) */
 	bool		report_progress;	/* emit progress.h status reports */
 	bool		estimated_count;	/* num_heap_tuples is an estimate */
@@ -63,20 +64,22 @@ typedef struct IndexVacuumInfo
  * of which this is just the first field; this provides a way for ambulkdelete
  * to communicate additional private data to amvacuumcleanup.
  *
- * Note: pages_removed is the amount by which the index physically shrank,
- * if any (ie the change in its total size on disk).  pages_deleted and
- * pages_free refer to free space within the index file.  Some index AMs
- * may compute num_index_tuples by reference to num_heap_tuples, in which
- * case they should copy the estimated_count field from IndexVacuumInfo.
+ * Note: pages_newly_deleted is the number of pages in the index that were
+ * deleted by the current vacuum operation.  pages_deleted and pages_free
+ * refer to free space within the index file.
+ *
+ * Note: Some index AMs may compute num_index_tuples by reference to
+ * num_heap_tuples, in which case they should copy the estimated_count field
+ * from IndexVacuumInfo.
  */
 typedef struct IndexBulkDeleteResult
 {
 	BlockNumber num_pages;		/* pages remaining in index */
-	BlockNumber pages_removed;	/* # removed during vacuum operation */
 	bool		estimated_count;	/* num_index_tuples is an estimate */
 	double		num_index_tuples;	/* tuples remaining */
 	double		tuples_removed; /* # removed during vacuum operation */
-	BlockNumber pages_deleted;	/* # unused pages in index */
+	BlockNumber pages_newly_deleted;	/* # pages marked deleted by us  */
+	BlockNumber pages_deleted;	/* # pages marked deleted (could be by us) */
 	BlockNumber pages_free;		/* # pages available for reuse */
 } IndexBulkDeleteResult;
 
@@ -114,7 +117,7 @@ typedef enum IndexUniqueCheck
 	UNIQUE_CHECK_NO,			/* Don't do any uniqueness checking */
 	UNIQUE_CHECK_YES,			/* Enforce uniqueness at insertion time */
 	UNIQUE_CHECK_PARTIAL,		/* Test uniqueness, but no error */
-	UNIQUE_CHECK_EXISTING		/* Check if existing tuple is unique */
+	UNIQUE_CHECK_EXISTING,		/* Check if existing tuple is unique */
 } IndexUniqueCheck;
 
 
@@ -136,6 +139,7 @@ typedef struct IndexOrderByDistance
 #define IndexScanIsValid(scan) PointerIsValid(scan)
 
 extern Relation index_open(Oid relationId, LOCKMODE lockmode);
+extern Relation try_index_open(Oid relationId, LOCKMODE lockmode);
 extern void index_close(Relation relation, LOCKMODE lockmode);
 
 extern bool index_insert(Relation indexRelation,
@@ -143,7 +147,10 @@ extern bool index_insert(Relation indexRelation,
 						 ItemPointer heap_t_ctid,
 						 Relation heapRelation,
 						 IndexUniqueCheck checkUnique,
+						 bool indexUnchanged,
 						 struct IndexInfo *indexInfo);
+extern void index_insert_cleanup(Relation indexRelation,
+								 struct IndexInfo *indexInfo);
 
 extern IndexScanDesc index_beginscan(Relation heapRelation,
 									 Relation indexRelation,
@@ -158,9 +165,11 @@ extern void index_rescan(IndexScanDesc scan,
 extern void index_endscan(IndexScanDesc scan);
 extern void index_markpos(IndexScanDesc scan);
 extern void index_restrpos(IndexScanDesc scan);
-extern Size index_parallelscan_estimate(Relation indexrel, Snapshot snapshot);
-extern void index_parallelscan_initialize(Relation heaprel, Relation indexrel,
-										  Snapshot snapshot, ParallelIndexScanDesc target);
+extern Size index_parallelscan_estimate(Relation indexRelation,
+										int nkeys, int norderbys, Snapshot snapshot);
+extern void index_parallelscan_initialize(Relation heapRelation,
+										  Relation indexRelation, Snapshot snapshot,
+										  ParallelIndexScanDesc target);
 extern void index_parallelrescan(IndexScanDesc scan);
 extern IndexScanDesc index_beginscan_parallel(Relation heaprel,
 											  Relation indexrel, int nkeys, int norderbys,
@@ -174,11 +183,11 @@ extern bool index_getnext_slot(IndexScanDesc scan, ScanDirection direction,
 extern int64 index_getbitmap(IndexScanDesc scan, TIDBitmap *bitmap);
 
 extern IndexBulkDeleteResult *index_bulk_delete(IndexVacuumInfo *info,
-												IndexBulkDeleteResult *stats,
+												IndexBulkDeleteResult *istat,
 												IndexBulkDeleteCallback callback,
 												void *callback_state);
 extern IndexBulkDeleteResult *index_vacuum_cleanup(IndexVacuumInfo *info,
-												   IndexBulkDeleteResult *stats);
+												   IndexBulkDeleteResult *istat);
 extern bool index_can_return(Relation indexRelation, int attno);
 extern RegProcedure index_getprocid(Relation irel, AttrNumber attnum,
 									uint16 procnum);
@@ -188,7 +197,7 @@ extern void index_store_float8_orderby_distances(IndexScanDesc scan,
 												 Oid *orderByTypes,
 												 IndexOrderByDistance *distances,
 												 bool recheckOrderBy);
-extern bytea *index_opclass_options(Relation relation, AttrNumber attnum,
+extern bytea *index_opclass_options(Relation indrel, AttrNumber attnum,
 									Datum attoptions, bool validate);
 
 
@@ -199,7 +208,7 @@ extern IndexScanDesc RelationGetIndexScan(Relation indexRelation,
 										  int nkeys, int norderbys);
 extern void IndexScanEnd(IndexScanDesc scan);
 extern char *BuildIndexValueDescription(Relation indexRelation,
-										Datum *values, bool *isnull);
+										const Datum *values, const bool *isnull);
 extern TransactionId index_compute_xid_horizon_for_tuples(Relation irel,
 														  Relation hrel,
 														  Buffer ibuf,
@@ -224,5 +233,14 @@ extern SysScanDesc systable_beginscan_ordered(Relation heapRelation,
 extern HeapTuple systable_getnext_ordered(SysScanDesc sysscan,
 										  ScanDirection direction);
 extern void systable_endscan_ordered(SysScanDesc sysscan);
+extern void systable_inplace_update_begin(Relation relation,
+										  Oid indexId,
+										  bool indexOK,
+										  Snapshot snapshot,
+										  int nkeys, const ScanKeyData *key,
+										  HeapTuple *oldtupcopy,
+										  void **state);
+extern void systable_inplace_update_finish(void *state, HeapTuple tuple);
+extern void systable_inplace_update_cancel(void *state);
 
 #endif							/* GENAM_H */

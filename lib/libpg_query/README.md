@@ -4,7 +4,7 @@ C library for accessing the PostgreSQL parser outside of the server.
 
 This library uses the actual PostgreSQL server source to parse SQL queries and return the internal PostgreSQL parse tree.
 
-Note that this is mostly intended as a base library for [pg_query](https://github.com/pganalyze/pg_query) (Ruby), [pg_query.go](https://github.com/pganalyze/pg_query_go) (Go), [pgsql-parser](https://github.com/pyramation/pgsql-parser) (Node), [psqlparse](https://github.com/alculquicondor/psqlparse) (Python) and [pglast](https://pypi.org/project/pglast/) (Python 3).
+Note that this is mostly intended as a base library for [pg_query](https://github.com/pganalyze/pg_query) (Ruby), [pg_query.go](https://github.com/pganalyze/pg_query_go) (Go), [pg_query.rs](https://github.com/pganalyze/pg_query.rs) (Rust), [pgsql-parser](https://github.com/launchql/pgsql-parser) (Node), [psqlparse](https://github.com/alculquicondor/psqlparse) (Python) and [pglast](https://pypi.org/project/pglast/) (Python 3).
 
 You can find further background to why a query's parse tree is useful here: https://pganalyze.com/blog/parse-postgresql-queries-in-ruby.html
 
@@ -12,7 +12,7 @@ You can find further background to why a query's parse tree is useful here: http
 ## Installation
 
 ```sh
-git clone -b 13-latest git://github.com/pganalyze/libpg_query
+git clone -b 17-latest git://github.com/pganalyze/libpg_query
 cd libpg_query
 make
 ```
@@ -20,6 +20,12 @@ make
 Due to compiling parts of PostgreSQL, running `make` will take a bit. Expect up to 3 minutes.
 
 For a production build, its best to use a specific git tag (see CHANGELOG).
+
+When compiling on Windows with Visual Studio, instead use `nmake` with the `Makefile.msvc`:
+
+```sh
+nmake /F Makefile.msvc
+```
 
 
 ## Usage: Parsing a query
@@ -51,7 +57,7 @@ This will output the parse tree (whitespace adjusted here for better readability
 
 ```json
 {
-    "version": 130008,
+    "version": 170004,
     "stmts": [
         {
             "stmt": {
@@ -124,7 +130,7 @@ int main() {
 This will output the following:
 
 ```
-  version: 130008, tokens: 7, size: 77
+  version: 170004, tokens: 7, size: 77
   "SELECT" = [ 0, 6, SELECT, RESERVED_KEYWORD ]
   "update" = [ 7, 13, UPDATE, UNRESERVED_KEYWORD ]
   "AS" = [ 14, 16, AS, RESERVED_KEYWORD ]
@@ -231,10 +237,14 @@ Each major version is maintained in a dedicated git branch. Only the latest Post
 
 | PostgreSQL Major Version | Branch     | Status              |
 |--------------------------|------------|---------------------|
-| 13                       | 13-latest  | Active development  |
+| 17                       | 17-latest  | Active development  |
+| 16                       | 16-latest  | Critical fixes only |
+| 15                       | 15-latest  | Critical fixes only |
+| 14                       | 14-latest  | Critical fixes only |
+| 13                       | 13-latest  | Critical fixes only |
 | 12                       | (n/a)      | Not supported       |
 | 11                       | (n/a)      | Not supported       |
-| 10                       | 10-latest  | Critical fixes only |
+| 10                       | 10-latest  | No longer supported |
 | 9.6                      | (n/a)      | Not supported       |
 | 9.5                      | 9.5-latest | No longer supported |
 | 9.4                      | 9.4-latest | No longer supported |
@@ -245,9 +255,10 @@ pg_query wrappers in other languages:
 
 * Ruby: [pg_query](https://github.com/pganalyze/pg_query)
 * Go: [pg_query_go](https://github.com/pganalyze/pg_query_go)
-* Javascript (Node): [pgsql-parser](https://github.com/pyramation/pgsql-parser)
+* Javascript (Node): [pgsql-parser](https://github.com/launchql/pgsql-parser)
 * Javascript (Browser): [pg-query-emscripten](https://github.com/pganalyze/pg-query-emscripten)
-* Python: [psqlparse](https://github.com/alculquicondor/psqlparse), [pglast](https://github.com/lelit/pglast)
+* Python: [psqlparse](https://github.com/alculquicondor/psqlparse), [pglast](https://github.com/lelit/pglast),
+[psqlparse2](https://github.com/dani-maarouf/psqlparse2)
 * OCaml: [pg_query-ocaml](https://github.com/roddyyaga/pg_query-ocaml)
 * Rust: [pg_query.rs](https://github.com/pganalyze/pg_query.rs)
 
@@ -262,6 +273,7 @@ Products, tools and libraries built on pg_query:
 * [pg_materialize](https://github.com/aanari/pg-materialize)
 * [DuckDB](https://github.com/cwida/duckdb) ([details](https://github.com/cwida/duckdb/tree/master/third_party/libpg_query))
 * [pgspot](https://github.com/timescale/pgspot)
+* [Postgres Language Server](https://github.com/supabase/postgres_lsp)
 * and more
 
 Please feel free to [open a PR](https://github.com/pganalyze/libpg_query/pull/new/master) to add yours! :)
@@ -275,8 +287,9 @@ Please feel free to [open a PR](https://github.com/pganalyze/libpg_query/pull/ne
 ## License
 
 PostgreSQL server source code, used under the [PostgreSQL license](https://www.postgresql.org/about/licence/).<br>
-Portions Copyright (c) 1996-2017, The PostgreSQL Global Development Group<br>
+Portions Copyright (c) 1996-2023, The PostgreSQL Global Development Group<br>
 Portions Copyright (c) 1994, The Regents of the University of California
 
 All other parts are licensed under the 3-clause BSD license, see LICENSE file for details.<br>
-Copyright (c) 2017, Lukas Fittl <lukas@fittl.com>
+Copyright (c) 2015, Lukas Fittl <lukas@fittl.com>
+Copyright (c) 2016-2025, Duboce Labs, Inc. (pganalyze) <team@pganalyze.com>

@@ -66,14 +66,18 @@ create rule qqq as on delete to copydml_test where old.t <> 'f' do instead inser
 copy (delete from copydml_test) to stdout;
 drop rule qqq on copydml_test;
 
+create rule qqq as on insert to copydml_test do instead notify copydml_test;
+copy (insert into copydml_test default values) to stdout;
+drop rule qqq on copydml_test;
+
 -- triggers
 create function qqq_trig() returns trigger as $$
 begin
 if tg_op in ('INSERT', 'UPDATE') then
-    raise notice '% %', tg_op, new.id;
+    raise notice '% % %', tg_when, tg_op, new.id;
     return new;
 else
-    raise notice '% %', tg_op, old.id;
+    raise notice '% % %', tg_when, tg_op, old.id;
     return old;
 end if;
 end

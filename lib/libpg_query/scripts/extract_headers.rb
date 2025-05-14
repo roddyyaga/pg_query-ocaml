@@ -33,23 +33,19 @@ class Extractor
     inside = false
     @nodetypes = []
 
-    lines = File.read(File.join(@pgdir, '/src/include/nodes/nodes.h'))
+    lines = File.read(File.join(@pgdir, '/src/include/nodes/nodetags.h'))
     lines.each_line do |line|
-      if inside
+      if !line.start_with? /\/?\ *\*/
         if line[/T_([A-z_]+)(\s+=\s+\d+)?,/]
           @nodetypes << $1
-        elsif line == "} NodeTag;\n"
-          inside = false
         end
-      elsif line == "typedef enum NodeTag\n"
-        inside = true
       end
     end
   end
 
   IGNORE_LIST = [
     'Node', 'varlena', 'IntArray', 'nameData', 'bool',
-    'sig_atomic_t', 'size_t', 'varatt_indirect',
+    'sig_atomic_t', 'size_t', 'varatt_indirect', 'A_Const',
   ]
 
   def generate_defs!
@@ -63,7 +59,7 @@ class Extractor
 
     ['nodes/parsenodes', 'nodes/primnodes', 'nodes/lockoptions',
      'nodes/nodes', 'nodes/params', 'access/attnum', 'c', 'postgres', 'postgres_ext',
-     'commands/vacuum', 'storage/block', 'access/sdir', 'mb/pg_wchar', '../backend/parser/gram'].each do |group|
+     'commands/vacuum', 'storage/block', 'access/sdir', 'mb/pg_wchar', '../backend/parser/gram', '../backend/parser/gramparse'].each do |group|
       @target_group = group
       @struct_defs[@target_group] = {}
       @enum_defs[@target_group] = {}
@@ -100,7 +96,7 @@ class Extractor
   end
 
   def handle_struct(line)
-    if line[/^\s+(struct |const )?([A-z0-9]+)\s+(\*){0,2}([A-z_]+);\s*(\/\*.+)?/]
+    if line[/^\s+(struct |const )?([A-z0-9]+)\s+(\*){0,2}([A-z_]+)(?:\s+pg_node_attr\(\w+\))?;\s*(\/\*.+)?/]
       name = $4
       c_type = $2 + $3.to_s
       comment = $5
@@ -235,13 +231,19 @@ class Extractor
     generate_defs!
     transform_toplevel_comments!
 
+    # Fixup node tags, as they are included from a different auto-generated file: `nodes/nodetags.h`.
+    @nodetypes.each_with_index do |name, i|
+      @enum_defs['nodes/nodes']['NodeTag'][:values] << { name: "T_#{name}", value: i + 1 }
+    end
+
     @struct_defs['nodes/value'] = {}
     @struct_defs['nodes/value']['Integer'] = { fields: [{ name: 'ival', c_type: 'long' }] }
-    @struct_defs['nodes/value']['Float'] = { fields: [{ name: 'str', c_type: 'char*' }] }
-    @struct_defs['nodes/value']['String'] = { fields: [{ name: 'str', c_type: 'char*' }] }
-    @struct_defs['nodes/value']['BitString'] = { fields: [{ name: 'str', c_type: 'char*' }] }
+    @struct_defs['nodes/value']['Float'] = { fields: [{ name: 'fval', c_type: 'char*' }] }
+    @struct_defs['nodes/value']['Boolean'] = { fields: [{ name: 'boolval', c_type: 'bool' }] }
+    @struct_defs['nodes/value']['String'] = { fields: [{ name: 'sval', c_type: 'char*' }] }
+    @struct_defs['nodes/value']['BitString'] = { fields: [{ name: 'bsval', c_type: 'char*' }] }
+    @struct_defs['nodes/value']['A_Const'] = { fields: [{ name: 'isnull', c_type: 'bool' }, { name:'val', c_type: 'Node' }] }
     @struct_defs['nodes/pg_list'] = { 'List' => { fields: [{ name: 'items', c_type: '[]Node' }] } }
-    @struct_defs['nodes/value']['Null'] = { fields: [] }
     @struct_defs['nodes/params']['ParamListInfoData'][:fields].reject! { |f| f[:c_type] == 'ParamExternData' }
 
     File.write('./srcdata/nodetypes.json', JSON.pretty_generate(@nodetypes))

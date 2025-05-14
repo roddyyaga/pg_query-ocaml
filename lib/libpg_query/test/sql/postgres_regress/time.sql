@@ -40,6 +40,13 @@ SELECT '23:59:60.01'::time;  -- not allowed
 SELECT '24:01:00'::time;  -- not allowed
 SELECT '25:00:00'::time;  -- not allowed
 
+-- Test non-error-throwing API
+SELECT pg_input_is_valid('12:00:00', 'time');
+SELECT pg_input_is_valid('25:00:00', 'time');
+SELECT pg_input_is_valid('15:36:39 America/New_York', 'time');
+SELECT * FROM pg_input_error_info('25:00:00', 'time');
+SELECT * FROM pg_input_error_info('15:36:39 America/New_York', 'time');
+
 --
 -- TIME simple math
 --
@@ -50,3 +57,23 @@ SELECT '25:00:00'::time;  -- not allowed
 -- where we do mixed-type arithmetic. - thomas 2000-12-02
 
 SELECT f1 + time '00:01' AS "Illegal" FROM TIME_TBL;
+
+--
+-- test EXTRACT
+--
+SELECT EXTRACT(MICROSECOND FROM TIME '2020-05-26 13:30:25.575401');
+SELECT EXTRACT(MILLISECOND FROM TIME '2020-05-26 13:30:25.575401');
+SELECT EXTRACT(SECOND      FROM TIME '2020-05-26 13:30:25.575401');
+SELECT EXTRACT(MINUTE      FROM TIME '2020-05-26 13:30:25.575401');
+SELECT EXTRACT(HOUR        FROM TIME '2020-05-26 13:30:25.575401');
+SELECT EXTRACT(DAY         FROM TIME '2020-05-26 13:30:25.575401');  -- error
+SELECT EXTRACT(FORTNIGHT   FROM TIME '2020-05-26 13:30:25.575401');  -- error
+SELECT EXTRACT(TIMEZONE    FROM TIME '2020-05-26 13:30:25.575401');  -- error
+SELECT EXTRACT(EPOCH       FROM TIME '2020-05-26 13:30:25.575401');
+
+-- date_part implementation is mostly the same as extract, so only
+-- test a few cases for additional coverage.
+SELECT date_part('microsecond', TIME '2020-05-26 13:30:25.575401');
+SELECT date_part('millisecond', TIME '2020-05-26 13:30:25.575401');
+SELECT date_part('second',      TIME '2020-05-26 13:30:25.575401');
+SELECT date_part('epoch',       TIME '2020-05-26 13:30:25.575401');

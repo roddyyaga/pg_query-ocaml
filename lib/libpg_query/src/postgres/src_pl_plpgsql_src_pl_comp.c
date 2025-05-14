@@ -27,6 +27,7 @@
  * - plpgsql_parse_wordrowtype
  * - plpgsql_parse_cwordtype
  * - plpgsql_parse_cwordrowtype
+ * - plpgsql_build_datatype_arrayof
  * - plpgsql_parse_result
  * - plpgsql_finish_datums
  * - plpgsql_compile_error_callback
@@ -39,7 +40,7 @@
  * pl_comp.c		- Compiler part of the PL/pgSQL
  *			  procedural language
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -62,6 +63,7 @@
 #include "parser/parse_type.h"
 #include "plpgsql.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
@@ -271,6 +273,7 @@ plpgsql_compile_inline(char *proc_source)
 	function->extra_errors = 0;
 
 	function->nstatements = 0;
+	function->requires_procedure_resowner = false;
 
 	plpgsql_ns_init();
 	plpgsql_ns_push(func_name, PLPGSQL_LABEL_BLOCK);
@@ -546,7 +549,8 @@ plpgsql_parse_dblword(char *word1, char *word2,
 	/*
 	 * We should do nothing in DECLARE sections.  In SQL expressions, we
 	 * really only need to make sure that RECFIELD datums are created when
-	 * needed.
+	 * needed.  In all the cases handled by this function, returning a T_DATUM
+	 * with a two-word idents string is the right thing.
 	 */
 	if (plpgsql_IdentifierLookup != IDENTIFIER_LOOKUP_DECLARE)
 	{
@@ -620,40 +624,53 @@ plpgsql_parse_tripword(char *word1, char *word2, char *word3,
 	List	   *idents;
 	int			nnames;
 
-	idents = list_make3(makeString(word1),
-						makeString(word2),
-						makeString(word3));
-
 	/*
-	 * We should do nothing in DECLARE sections.  In SQL expressions, we
-	 * really only need to make sure that RECFIELD datums are created when
-	 * needed.
+	 * We should do nothing in DECLARE sections.  In SQL expressions, we need
+	 * to make sure that RECFIELD datums are created when needed, and we need
+	 * to be careful about how many names are reported as belonging to the
+	 * T_DATUM: the third word could be a sub-field reference, which we don't
+	 * care about here.
 	 */
 	if (plpgsql_IdentifierLookup != IDENTIFIER_LOOKUP_DECLARE)
 	{
 		/*
-		 * Do a lookup in the current namespace stack. Must find a qualified
+		 * Do a lookup in the current namespace stack.  Must find a record
 		 * reference, else ignore.
 		 */
 		ns = plpgsql_ns_lookup(plpgsql_ns_top(), false,
 							   word1, word2, word3,
 							   &nnames);
-		if (ns != NULL && nnames == 2)
+		if (ns != NULL)
 		{
 			switch (ns->itemtype)
 			{
 				case PLPGSQL_NSTYPE_REC:
 					{
-						/*
-						 * words 1/2 are a record name, so third word could be
-						 * a field in this record.
-						 */
 						PLpgSQL_rec *rec;
 						PLpgSQL_recfield *new;
 
 						rec = (PLpgSQL_rec *) (plpgsql_Datums[ns->itemno]);
-						new = plpgsql_build_recfield(rec, word3);
-
+						if (nnames == 1)
+						{
+							/*
+							 * First word is a record name, so second word
+							 * could be a field in this record (and the third,
+							 * a sub-field).  We build a RECFIELD datum
+							 * whether it is or not --- any error will be
+							 * detected later.
+							 */
+							new = plpgsql_build_recfield(rec, word2);
+							idents = list_make2(makeString(word1),
+												makeString(word2));
+						}
+						else
+						{
+							/* Block-qualified reference to record variable. */
+							new = plpgsql_build_recfield(rec, word3);
+							idents = list_make3(makeString(word1),
+												makeString(word2),
+												makeString(word3));
+						}
 						wdatum->datum = (PLpgSQL_datum *) new;
 						wdatum->ident = NULL;
 						wdatum->quoted = false; /* not used */
@@ -668,16 +685,19 @@ plpgsql_parse_tripword(char *word1, char *word2, char *word3,
 	}
 
 	/* Nothing found */
+	idents = list_make3(makeString(word1),
+						makeString(word2),
+						makeString(word3));
 	cword->idents = idents;
 	return false;
 }
 
 
 /* ----------
- * plpgsql_parse_wordtype	The scanner found word%TYPE. word can be
- *				a variable name or a basetype.
+ * plpgsql_parse_wordtype	The scanner found word%TYPE. word should be
+ *				a pre-existing variable name.
  *
- * Returns datatype struct, or NULL if no match found for word.
+ * Returns datatype struct.  Throws error if no match found for word.
  * ----------
  */
 PLpgSQL_type * plpgsql_parse_wordtype(char *ident) { return NULL; }
@@ -686,6 +706,10 @@ PLpgSQL_type * plpgsql_parse_wordtype(char *ident) { return NULL; }
 
 /* ----------
  * plpgsql_parse_cwordtype		Same lookup for compositeword%TYPE
+ *
+ * Here, we allow either a block-qualified variable name, or a reference
+ * to a column of some table.  (If we must throw error, we assume that the
+ * latter case was intended.)
  * ----------
  */
 PLpgSQL_type * plpgsql_parse_cwordtype(List *idents) { return NULL; }
@@ -860,13 +884,102 @@ plpgsql_build_recfield(PLpgSQL_rec *rec, const char *fldname)
  * It can be NULL if the type could not be a composite type, or if it was
  * identified by OID to begin with (e.g., it's a function argument type).
  */
-PLpgSQL_type * plpgsql_build_datatype(Oid typeOid, int32 typmod, Oid collation, TypeName *origtypname) { PLpgSQL_type *typ; typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type)); typ->typname = pstrdup("UNKNOWN"); typ->ttype = PLPGSQL_TTYPE_SCALAR; return typ; }
+
+PLpgSQL_type * plpgsql_build_datatype(Oid typeOid, int32 typmod, Oid collation, TypeName *origtypname)
+{
+	PLpgSQL_type *typ;
+	char *ident = NULL, *ns = NULL;
+	typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type));
+
+	typ->ttype = PLPGSQL_TTYPE_SCALAR;
+	typ->atttypmod = typmod;
+	typ->collation = collation;
+
+	if (origtypname) {
+		typ->typoid = origtypname->typeOid;
+
+		if (list_length(origtypname->names) == 1) {
+			ident = linitial_node(String, origtypname->names)->sval;
+		} else if (list_length(origtypname->names) == 2) {
+			ns = linitial_node(String, origtypname->names)->sval;
+			ident = lsecond_node(String, origtypname->names)->sval;
+			if (strcmp(ns, "pg_catalog") != 0)
+				typ->ttype = PLPGSQL_TTYPE_REC;
+		}
+	} else {
+		typ->typoid = typeOid;
+		ns = "pg_catalog";
+		switch(typeOid)
+		{
+			case BOOLOID:
+				ident = "boolean";
+				break;
+			case INT4OID:
+				ident = "integer";
+				break;
+			case TEXTOID:
+				ident = "text";
+				break;
+			case REFCURSOROID:
+				ident = "refcursor";
+				break;
+		}
+	}
+	if (ident) {
+		typ->typname = quote_qualified_identifier(ns, ident);
+	}
+	return typ;
+}
+
 
 
 /*
  * Utility subroutine to make a PLpgSQL_type struct given a pg_type entry
  * and additional details (see comments for plpgsql_build_datatype).
  */
+
+
+/*
+ * Build an array type for the element type specified as argument.
+ */
+
+PLpgSQL_type * plpgsql_build_datatype_arrayof(PLpgSQL_type *dtype)
+{
+	if (dtype->typisarray)
+		return dtype;
+
+	PLpgSQL_type *array_type;
+	array_type = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type));
+
+	array_type->ttype = PLPGSQL_TTYPE_REC;
+	array_type->atttypmod = dtype->atttypmod;
+	array_type->collation = dtype->collation;
+
+	array_type->typisarray = true;
+
+	switch(dtype->typoid)
+	{
+		case BOOLOID:
+			array_type->typoid = BOOLARRAYOID;
+			array_type->typname = pstrdup("boolean[]");
+			break;
+		case INT4OID:
+			array_type->typoid = INT4ARRAYOID;
+			array_type->typname = pstrdup("integer[]");
+			break;
+		case TEXTOID:
+			array_type->typoid = TEXTARRAYOID;
+			array_type->typname = pstrdup("text[]");
+			break;
+		default:
+			array_type->typname = pstrdup("UNKNOWN");
+			break;
+	}
+	array_type->typoid = dtype->typoid;
+
+	return array_type;
+}
+
 
 
 /*
@@ -1103,9 +1216,15 @@ plpgsql_add_initdatums(int **varnos)
 
 /*
  * This is the same as the standard resolve_polymorphic_argtypes() function,
- * but with a special case for validation: assume that polymorphic arguments
- * are integer, integer-array or integer-range.  Also, we go ahead and report
- * the error if we can't resolve the types.
+ * except that:
+ * 1. We go ahead and report the error if we can't resolve the types.
+ * 2. We treat RECORD-type input arguments (not output arguments) as if
+ *    they were polymorphic, replacing their types with the actual input
+ *    types if we can determine those.  This allows us to create a separate
+ *    function cache entry for each named composite type passed to such an
+ *    argument.
+ * 3. In validation mode, we have no inputs to look at, so assume that
+ *    polymorphic arguments are integer, integer-array or integer-range.
  */
 
 

@@ -1,5 +1,64 @@
 --
 -- BTREE_INDEX
+--
+
+-- directory paths are passed to us in environment variables
+\getenv abs_srcdir PG_ABS_SRCDIR
+
+CREATE TABLE bt_i4_heap (
+	seqno 		int4,
+	random 		int4
+);
+
+CREATE TABLE bt_name_heap (
+	seqno 		name,
+	random 		int4
+);
+
+CREATE TABLE bt_txt_heap (
+	seqno 		text,
+	random 		int4
+);
+
+CREATE TABLE bt_f8_heap (
+	seqno 		float8,
+	random 		int4
+);
+
+\set filename :abs_srcdir '/data/desc.data'
+COPY bt_i4_heap FROM :'filename';
+
+\set filename :abs_srcdir '/data/hash.data'
+COPY bt_name_heap FROM :'filename';
+
+\set filename :abs_srcdir '/data/desc.data'
+COPY bt_txt_heap FROM :'filename';
+
+\set filename :abs_srcdir '/data/hash.data'
+COPY bt_f8_heap FROM :'filename';
+
+ANALYZE bt_i4_heap;
+ANALYZE bt_name_heap;
+ANALYZE bt_txt_heap;
+ANALYZE bt_f8_heap;
+
+--
+-- BTREE ascending/descending cases
+--
+-- we load int4/text from pure descending data (each key is a new
+-- low key) and name/f8 from pure ascending data (each key is a new
+-- high key).  we had a bug where new low keys would sometimes be
+-- "lost".
+--
+CREATE INDEX bt_i4_index ON bt_i4_heap USING btree (seqno int4_ops);
+
+CREATE INDEX bt_name_index ON bt_name_heap USING btree (seqno name_ops);
+
+CREATE INDEX bt_txt_index ON bt_txt_heap USING btree (seqno text_ops);
+
+CREATE INDEX bt_f8_index ON bt_f8_heap USING btree (seqno float8_ops);
+
+--
 -- test retrieval of min/max keys for each index
 --
 
@@ -50,6 +109,46 @@ SELECT b.*
 SELECT b.*
    FROM bt_f8_heap b
    WHERE b.seqno = '4500'::float8;
+
+--
+-- Add coverage for optimization of backwards scan index descents
+--
+-- Here we expect _bt_search to descend straight to a leaf page containing a
+-- non-pivot tuple with the value '47', which comes last (after 11 similar
+-- non-pivot tuples).  Query execution should only need to visit a single
+-- leaf page here.
+--
+-- Test case relies on tenk1_hundred index having a leaf page whose high key
+-- is '(48, -inf)'.  We use a low cardinality index to make our test case less
+-- sensitive to implementation details that may change in the future.
+set enable_seqscan to false;
+set enable_indexscan to true;
+set enable_bitmapscan to false;
+explain (costs off)
+select hundred, twenty from tenk1 where hundred < 48 order by hundred desc limit 1;
+select hundred, twenty from tenk1 where hundred < 48 order by hundred desc limit 1;
+
+-- This variant of the query need only return a single tuple located to the immediate
+-- right of the '(48, -inf)' high key.  It also only needs to scan one single
+-- leaf page (the right sibling of the page scanned by the last test case):
+explain (costs off)
+select hundred, twenty from tenk1 where hundred <= 48 order by hundred desc limit 1;
+select hundred, twenty from tenk1 where hundred <= 48 order by hundred desc limit 1;
+
+--
+-- Add coverage for ScalarArrayOp btree quals with pivot tuple constants
+--
+explain (costs off)
+select distinct hundred from tenk1 where hundred in (47, 48, 72, 82);
+select distinct hundred from tenk1 where hundred in (47, 48, 72, 82);
+
+explain (costs off)
+select distinct hundred from tenk1 where hundred in (47, 48, 72, 82) order by hundred desc;
+select distinct hundred from tenk1 where hundred in (47, 48, 72, 82) order by hundred desc;
+
+explain (costs off)
+select thousand from tenk1 where thousand in (364, 366,380) and tenthous = 200000;
+select thousand from tenk1 where thousand in (364, 366,380) and tenthous = 200000;
 
 --
 -- Check correct optimization of LIKE (special index operator support)

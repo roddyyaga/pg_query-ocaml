@@ -1,7 +1,7 @@
 #include "pg_query.h"
 #include "pg_query_internal.h"
 
-#include "parser/gramparse.h"
+#include "gramparse.h"
 #include "lib/stringinfo.h"
 
 #include "protobuf/pg_query.pb-c.h"
@@ -93,7 +93,7 @@ PgQueryScanResult pg_query_scan(const char* input)
       output_tokens[i] = malloc(sizeof(PgQuery__ScanToken));
       pg_query__scan_token__init(output_tokens[i]);
       output_tokens[i]->start = yylloc;
-      if (tok == SCONST || tok == BCONST || tok == XCONST || tok == IDENT || tok == C_COMMENT) {
+      if (tok == SCONST || tok == USCONST || tok == BCONST || tok == XCONST || tok == IDENT || tok == UIDENT || tok == C_COMMENT) {
         output_tokens[i]->end = yyextra.yyllocend;
       } else {
         output_tokens[i]->end = yylloc + ((struct yyguts_t*) yyscanner)->yyleng_r;
@@ -101,8 +101,9 @@ PgQueryScanResult pg_query_scan(const char* input)
       output_tokens[i]->token = tok;
 
       switch (tok) {
-      #define PG_KEYWORD(a,b,c) case b: output_tokens[i]->keyword_kind = c + 1; break;
+      #define PG_KEYWORD(a,b,c,d) case b: output_tokens[i]->keyword_kind = c + 1; break;
       #include "parser/kwlist.h"
+      #undef PG_KEYWORD
       default: output_tokens[i]->keyword_kind = 0;
       }
     }

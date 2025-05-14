@@ -1,7 +1,7 @@
 #include "pg_query.h"
 #include "pg_query_internal.h"
 
-#include "parser/gramparse.h"
+#include "gramparse.h"
 #include "lib/stringinfo.h"
 
 #include <unistd.h>
@@ -59,8 +59,9 @@ PgQuerySplitResult pg_query_split_with_scanner(const char* input)
     {
       int tok = core_yylex(&yylval, &yylloc, yyscanner);
       switch (tok) {
-      #define PG_KEYWORD(a,b,c) case b: is_keyword = true; break;
+      #define PG_KEYWORD(a,b,c,d) case b: is_keyword = true; break;
       #include "parser/kwlist.h"
+      #undef PG_KEYWORD
       default: is_keyword = false;
       }
       if (is_keyword)
@@ -88,7 +89,7 @@ PgQuerySplitResult pg_query_split_with_scanner(const char* input)
     {
       int tok = core_yylex(&yylval, &yylloc, yyscanner);
       switch (tok) {
-      #define PG_KEYWORD(a,b,c) case b: is_keyword = true; break;
+      #define PG_KEYWORD(a,b,c,d) case b: is_keyword = true; break;
       #include "parser/kwlist.h"
       default: is_keyword = false;
       }
@@ -165,11 +166,11 @@ PgQuerySplitResult pg_query_split_with_parser(const char* input)
 {
 	MemoryContext ctx = NULL;
 	PgQueryInternalParsetreeAndError parsetree_and_error;
-	PgQuerySplitResult result = {};
+	PgQuerySplitResult result = {0};
 
 	ctx = pg_query_enter_memory_context();
 
-	parsetree_and_error = pg_query_raw_parse(input);
+	parsetree_and_error = pg_query_raw_parse(input, PG_QUERY_PARSE_DEFAULT);
 
 	// These are all malloc-ed and will survive exiting the memory context, the caller is responsible to free them now
 	result.stderr_buffer = parsetree_and_error.stderr_buffer;

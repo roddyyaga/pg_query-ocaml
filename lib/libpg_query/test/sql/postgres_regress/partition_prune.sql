@@ -158,6 +158,7 @@ create table boolpart (a bool) partition by list (a);
 create table boolpart_default partition of boolpart default;
 create table boolpart_t partition of boolpart for values in ('true');
 create table boolpart_f partition of boolpart for values in ('false');
+insert into boolpart values (true), (false), (null);
 
 explain (costs off) select * from boolpart where a in (true, false);
 explain (costs off) select * from boolpart where a = false;
@@ -168,14 +169,86 @@ explain (costs off) select * from boolpart where a is not true and a is not fals
 explain (costs off) select * from boolpart where a is unknown;
 explain (costs off) select * from boolpart where a is not unknown;
 
+select * from boolpart where a in (true, false);
+select * from boolpart where a = false;
+select * from boolpart where not a = false;
+select * from boolpart where a is true or a is not true;
+select * from boolpart where a is not true;
+select * from boolpart where a is not true and a is not false;
+select * from boolpart where a is unknown;
+select * from boolpart where a is not unknown;
+
+-- try some other permutations with a NULL partition instead of a DEFAULT
+delete from boolpart where a is null;
+create table boolpart_null partition of boolpart for values in (null);
+insert into boolpart values(null);
+
+explain (costs off) select * from boolpart where a is not true;
+explain (costs off) select * from boolpart where a is not true and a is not false;
+explain (costs off) select * from boolpart where a is not false;
+explain (costs off) select * from boolpart where a is not unknown;
+
+select * from boolpart where a is not true;
+select * from boolpart where a is not true and a is not false;
+select * from boolpart where a is not false;
+select * from boolpart where a is not unknown;
+
+-- check that all partitions are pruned when faced with conflicting clauses
+explain (costs off) select * from boolpart where a is not unknown and a is unknown;
+explain (costs off) select * from boolpart where a is false and a is unknown;
+explain (costs off) select * from boolpart where a is true and a is unknown;
+
+-- inverse boolean partitioning - a seemingly unlikely design, but we've got
+-- code for it, so we'd better test it.
+create table iboolpart (a bool) partition by list ((not a));
+create table iboolpart_default partition of iboolpart default;
+create table iboolpart_f partition of iboolpart for values in ('true');
+create table iboolpart_t partition of iboolpart for values in ('false');
+insert into iboolpart values (true), (false), (null);
+
+explain (costs off) select * from iboolpart where a in (true, false);
+explain (costs off) select * from iboolpart where a = false;
+explain (costs off) select * from iboolpart where not a = false;
+explain (costs off) select * from iboolpart where a is true or a is not true;
+explain (costs off) select * from iboolpart where a is not true;
+explain (costs off) select * from iboolpart where a is not true and a is not false;
+explain (costs off) select * from iboolpart where a is unknown;
+explain (costs off) select * from iboolpart where a is not unknown;
+
+select * from iboolpart where a in (true, false);
+select * from iboolpart where a = false;
+select * from iboolpart where not a = false;
+select * from iboolpart where a is true or a is not true;
+select * from iboolpart where a is not true;
+select * from iboolpart where a is not true and a is not false;
+select * from iboolpart where a is unknown;
+select * from iboolpart where a is not unknown;
+
+-- Try some other permutations with a NULL partition instead of a DEFAULT
+delete from iboolpart where a is null;
+create table iboolpart_null partition of iboolpart for values in (null);
+insert into iboolpart values(null);
+
+-- Pruning shouldn't take place for these.  Just check the result is correct
+select * from iboolpart where a is not true;
+select * from iboolpart where a is not true and a is not false;
+select * from iboolpart where a is not false;
+
 create table boolrangep (a bool, b bool, c int) partition by range (a,b,c);
 create table boolrangep_tf partition of boolrangep for values from ('true', 'false', 0) to ('true', 'false', 100);
 create table boolrangep_ft partition of boolrangep for values from ('false', 'true', 0) to ('false', 'true', 100);
 create table boolrangep_ff1 partition of boolrangep for values from ('false', 'false', 0) to ('false', 'false', 50);
 create table boolrangep_ff2 partition of boolrangep for values from ('false', 'false', 50) to ('false', 'false', 100);
+create table boolrangep_null partition of boolrangep default;
 
 -- try a more complex case that's been known to trip up pruning in the past
 explain (costs off)  select * from boolrangep where not a and not b and c = 25;
+
+-- ensure we prune boolrangep_tf
+explain (costs off)  select * from boolrangep where a is not true and not b and c = 25;
+
+-- ensure we prune everything apart from boolrangep_tf and boolrangep_null
+explain (costs off)  select * from boolrangep where a is not false and not b and c = 25;
 
 -- test scalar-to-array operators
 create table coercepart (a varchar) partition by list (a);
@@ -283,25 +356,40 @@ explain (costs off) select * from like_op_noprune where a like '%BC';
 create table lparted_by_int2 (a smallint) partition by list (a);
 create table lparted_by_int2_1 partition of lparted_by_int2 for values in (1);
 create table lparted_by_int2_16384 partition of lparted_by_int2 for values in (16384);
-explain (costs off) select * from lparted_by_int2 where a = 100000000000000;
+explain (costs off) select * from lparted_by_int2 where a = 100_000_000_000_000;
 
 create table rparted_by_int2 (a smallint) partition by range (a);
 create table rparted_by_int2_1 partition of rparted_by_int2 for values from (1) to (10);
 create table rparted_by_int2_16384 partition of rparted_by_int2 for values from (10) to (16384);
 -- all partitions pruned
-explain (costs off) select * from rparted_by_int2 where a > 100000000000000;
+explain (costs off) select * from rparted_by_int2 where a > 100_000_000_000_000;
 create table rparted_by_int2_maxvalue partition of rparted_by_int2 for values from (16384) to (maxvalue);
 -- all partitions but rparted_by_int2_maxvalue pruned
-explain (costs off) select * from rparted_by_int2 where a > 100000000000000;
+explain (costs off) select * from rparted_by_int2 where a > 100_000_000_000_000;
 
-drop table lp, coll_pruning, rlp, mc3p, mc2p, boolpart, boolrangep, rp, coll_pruning_multi, like_op_noprune, lparted_by_int2, rparted_by_int2;
+drop table lp, coll_pruning, rlp, mc3p, mc2p, boolpart, iboolpart, boolrangep, rp, coll_pruning_multi, like_op_noprune, lparted_by_int2, rparted_by_int2;
+
+-- check that AlternativeSubPlan within a pruning expression gets cleaned up
+
+create table asptab (id int primary key) partition by range (id);
+create table asptab0 partition of asptab for values from (0) to (1);
+create table asptab1 partition of asptab for values from (1) to (2);
+
+explain (costs off)
+select * from
+  (select exists (select 1 from int4_tbl tinner where f1 = touter.f1) as b
+   from int4_tbl touter) ss,
+  asptab
+where asptab.id > ss.b::int;
+
+drop table asptab;
 
 --
 -- Test Partition pruning for HASH partitioning
 --
 -- Use hand-rolled hash functions and operator classes to get predictable
 -- result on different machines.  See the definitions of
--- part_part_test_int4_ops and part_test_text_ops in insert.sql.
+-- part_test_int4_ops and part_test_text_ops in test_setup.sql.
 --
 
 create table hp (a int, b text, c int)
@@ -347,8 +435,6 @@ explain (costs off) select * from hp where a = 1 and b = 'abcde' and
 drop table hp2;
 explain (costs off) select * from hp where a = 1 and b = 'abcde' and
   (c = 2 or c = 3);
-
-drop table hp;
 
 --
 -- Test runtime partition pruning
@@ -399,6 +485,25 @@ prepare ab_q3 (int, int) as
 select a from ab where b between $1 and $2 and a < (select 3);
 
 explain (analyze, costs off, summary off, timing off) execute ab_q3 (2, 2);
+
+--
+-- Test runtime pruning with hash partitioned tables
+--
+
+-- recreate partitions dropped above
+create table hp1 partition of hp for values with (modulus 4, remainder 1);
+create table hp2 partition of hp for values with (modulus 4, remainder 2);
+create table hp3 partition of hp for values with (modulus 4, remainder 3);
+
+-- Ensure we correctly prune unneeded partitions when there is an IS NULL qual
+prepare hp_q1 (text) as
+select * from hp where a is null and b = $1;
+
+explain (costs off) execute hp_q1('xxx');
+
+deallocate hp_q1;
+
+drop table hp;
 
 -- Test a backwards Append scan
 create table list_part (a int) partition by list (a);
@@ -515,6 +620,7 @@ create index ab_a3_b3_a_idx on ab_a3_b3 (a);
 
 set enable_hashjoin = 0;
 set enable_mergejoin = 0;
+set enable_memoize = 0;
 
 select explain_parallel_append('select avg(ab.a) from ab inner join lprt_a a on ab.a = a.a where a.a in(0, 0, 1)');
 
@@ -533,6 +639,7 @@ select explain_parallel_append('select avg(ab.a) from ab inner join lprt_a a on 
 
 reset enable_hashjoin;
 reset enable_mergejoin;
+reset enable_memoize;
 reset parallel_setup_cost;
 reset parallel_tuple_cost;
 reset min_parallel_table_scan_size;
@@ -1062,6 +1169,54 @@ reset enable_partition_pruning;
 
 drop table listp;
 
+-- Ensure run-time pruning works correctly for nested Append nodes
+set parallel_setup_cost to 0;
+set parallel_tuple_cost to 0;
+
+create table listp (a int) partition by list(a);
+create table listp_12 partition of listp for values in(1,2) partition by list(a);
+create table listp_12_1 partition of listp_12 for values in(1);
+create table listp_12_2 partition of listp_12 for values in(2);
+
+-- Force the 2nd subnode of the Append to be non-parallel.  This results in
+-- a nested Append node because the mixed parallel / non-parallel paths cannot
+-- be pulled into the top-level Append.
+alter table listp_12_1 set (parallel_workers = 0);
+
+-- Ensure that listp_12_2 is not scanned.  (The nested Append is not seen in
+-- the plan as it's pulled in setref.c due to having just a single subnode).
+select explain_parallel_append('select * from listp where a = (select 1);');
+
+-- Like the above but throw some more complexity at the planner by adding
+-- a UNION ALL.  We expect both sides of the union not to scan the
+-- non-required partitions.
+select explain_parallel_append(
+'select * from listp where a = (select 1)
+  union all
+select * from listp where a = (select 2);');
+
+drop table listp;
+reset parallel_tuple_cost;
+reset parallel_setup_cost;
+
+-- Test case for run-time pruning with a nested Merge Append
+set enable_sort to 0;
+create table rangep (a int, b int) partition by range (a);
+create table rangep_0_to_100 partition of rangep for values from (0) to (100) partition by list (b);
+-- We need 3 sub-partitions. 1 to validate pruning worked and another two
+-- because a single remaining partition would be pulled up to the main Append.
+create table rangep_0_to_100_1 partition of rangep_0_to_100 for values in(1);
+create table rangep_0_to_100_2 partition of rangep_0_to_100 for values in(2);
+create table rangep_0_to_100_3 partition of rangep_0_to_100 for values in(3);
+create table rangep_100_to_200 partition of rangep for values from (100) to (200);
+create index on rangep (a);
+
+-- Ensure run-time pruning works on the nested Merge Append
+explain (analyze on, costs off, timing off, summary off)
+select * from rangep where b IN((select 1),(select 2)) order by a;
+reset enable_sort;
+drop table rangep;
+
 --
 -- Check that gen_prune_steps_from_opexps() works well for various cases of
 -- clauses for different partition keys
@@ -1096,16 +1251,57 @@ explain (costs off) select * from rp_prefix_test3 where a >= 1 and b >= 1 and b 
 -- that the caller arranges clauses in that prefix in the required order)
 explain (costs off) select * from rp_prefix_test3 where a >= 1 and b >= 1 and b = 2 and c = 2 and d >= 0;
 
-create table hp_prefix_test (a int, b int, c int, d int) partition by hash (a part_test_int4_ops, b part_test_int4_ops, c part_test_int4_ops, d part_test_int4_ops);
-create table hp_prefix_test_p1 partition of hp_prefix_test for values with (modulus 2, remainder 0);
-create table hp_prefix_test_p2 partition of hp_prefix_test for values with (modulus 2, remainder 1);
-
--- Test that get_steps_using_prefix() handles non-NULL step_nullkeys
-explain (costs off) select * from hp_prefix_test where a = 1 and b is null and c = 1 and d = 1;
-
 drop table rp_prefix_test1;
 drop table rp_prefix_test2;
 drop table rp_prefix_test3;
+
+--
+-- Test that get_steps_using_prefix() handles IS NULL clauses correctly
+--
+create table hp_prefix_test (a int, b int, c int, d int)
+  partition by hash (a part_test_int4_ops, b part_test_int4_ops, c part_test_int4_ops, d part_test_int4_ops);
+
+-- create 8 partitions
+select 'create table hp_prefix_test_p' || x::text || ' partition of hp_prefix_test for values with (modulus 8, remainder ' || x::text || ');'
+from generate_Series(0,7) x;
+\gexec
+
+-- insert 16 rows, one row for each test to perform.
+insert into hp_prefix_test
+select
+  case a when 0 then null else 1 end,
+  case b when 0 then null else 2 end,
+  case c when 0 then null else 3 end,
+  case d when 0 then null else 4 end
+from
+  generate_series(0,1) a,
+  generate_series(0,1) b,
+  generate_Series(0,1) c,
+  generate_Series(0,1) d;
+
+-- Ensure partition pruning works correctly for each combination of IS NULL
+-- and equality quals.  This may seem a little excessive, but there have been
+-- a number of bugs in this area over the years.  We make use of row only
+-- output to reduce the size of the expected results.
+\t on
+select
+  'explain (costs off) select tableoid::regclass,* from hp_prefix_test where ' ||
+  string_agg(c.colname || case when g.s & (1 << c.colpos) = 0 then ' is null' else ' = ' || (colpos+1)::text end, ' and ' order by c.colpos)
+from (values('a',0),('b',1),('c',2),('d',3)) c(colname, colpos), generate_Series(0,15) g(s)
+group by g.s
+order by g.s;
+\gexec
+
+-- And ensure we get exactly 1 row from each. Again, all 16 possible combinations.
+select
+  'select tableoid::regclass,* from hp_prefix_test where ' ||
+  string_agg(c.colname || case when g.s & (1 << c.colpos) = 0 then ' is null' else ' = ' || (colpos+1)::text end, ' and ' order by c.colpos)
+from (values('a',0),('b',1),('c',2),('d',3)) c(colname, colpos), generate_Series(0,15) g(s)
+group by g.s
+order by g.s;
+\gexec
+\t off
+
 drop table hp_prefix_test;
 
 --

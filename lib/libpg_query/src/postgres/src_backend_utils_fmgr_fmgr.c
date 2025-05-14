@@ -1,6 +1,6 @@
 /*--------------------------------------------------------------------
  * Symbols referenced in this file:
- * - FunctionCall5Coll
+ * - FunctionCall6Coll
  *--------------------------------------------------------------------
  */
 
@@ -9,7 +9,7 @@
  * fmgr.c
  *	  The Postgres function manager.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -29,6 +29,7 @@
 #include "lib/stringinfo.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
+#include "nodes/miscnodes.h"
 #include "nodes/nodeFuncs.h"
 #include "pgstat.h"
 #include "utils/acl.h"
@@ -124,7 +125,7 @@ extern Datum fmgr_security_definer(PG_FUNCTION_ARGS);
  * If *mod == NULL and *fn != NULL, the function is implemented by a symbol in
  * the main binary.
  *
- * If *mod != NULL and *fn !=NULL the function is implemented in an extension
+ * If *mod != NULL and *fn != NULL the function is implemented in an extension
  * shared object.
  *
  * The returned module and function names are pstrdup'ed into the current
@@ -180,14 +181,6 @@ extern Datum fmgr_security_definer(PG_FUNCTION_ARGS);
  */
 
 
-/*
- * clear_external_function_hash: remove entries for a library being closed
- *
- * Presently we just zap the entire hash table, but later it might be worth
- * the effort to remove only the entries associated with the given handle.
- */
-
-
 
 /*
  * Copy an FmgrInfo struct
@@ -217,7 +210,9 @@ struct fmgr_security_definer_cache
 {
 	FmgrInfo	flinfo;			/* lookup info for target function */
 	Oid			userid;			/* userid to set, or InvalidOid */
-	ArrayType  *proconfig;		/* GUC values to set, or NULL */
+	List	   *configNames;	/* GUC names to set, or NIL */
+	List	   *configHandles;	/* GUC handles to set, or NIL */
+	List	   *configValues;	/* GUC values to set, or NIL */
 	Datum		arg;			/* passthrough argument for plugin modules */
 };
 
@@ -291,14 +286,17 @@ struct fmgr_security_definer_cache
 
 
 
+
+
 Datum
-FunctionCall5Coll(FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2,
-				  Datum arg3, Datum arg4, Datum arg5)
+FunctionCall6Coll(FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2,
+				  Datum arg3, Datum arg4, Datum arg5,
+				  Datum arg6)
 {
-	LOCAL_FCINFO(fcinfo, 5);
+	LOCAL_FCINFO(fcinfo, 6);
 	Datum		result;
 
-	InitFunctionCallInfoData(*fcinfo, flinfo, 5, collation, NULL, NULL);
+	InitFunctionCallInfoData(*fcinfo, flinfo, 6, collation, NULL, NULL);
 
 	fcinfo->args[0].value = arg1;
 	fcinfo->args[0].isnull = false;
@@ -310,6 +308,8 @@ FunctionCall5Coll(FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2,
 	fcinfo->args[3].isnull = false;
 	fcinfo->args[4].value = arg5;
 	fcinfo->args[4].isnull = false;
+	fcinfo->args[5].value = arg6;
+	fcinfo->args[5].isnull = false;
 
 	result = FunctionCallInvoke(fcinfo);
 
@@ -319,8 +319,6 @@ FunctionCall5Coll(FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2,
 
 	return result;
 }
-
-
 
 
 
@@ -368,6 +366,37 @@ FunctionCall5Coll(FmgrInfo *flinfo, Oid collation, Datum arg1, Datum arg2,
  * the caller should assume the result is NULL, but we'll call the input
  * function anyway if it's not strict.  So this is almost but not quite
  * the same as FunctionCall3.
+ */
+
+
+/*
+ * Call a previously-looked-up datatype input function, with non-exception
+ * handling of "soft" errors.
+ *
+ * This is basically like InputFunctionCall, but the converted Datum is
+ * returned into *result while the function result is true for success or
+ * false for failure.  Also, the caller may pass an ErrorSaveContext node.
+ * (We declare that as "fmNodePtr" to avoid including nodes.h in fmgr.h.)
+ *
+ * If escontext points to an ErrorSaveContext, any "soft" errors detected by
+ * the input function will be reported by filling the escontext struct and
+ * returning false.  (The caller can choose to test SOFT_ERROR_OCCURRED(),
+ * but checking the function result instead is usually cheaper.)
+ *
+ * If escontext does not point to an ErrorSaveContext, errors are reported
+ * via ereport(ERROR), so that there is no functional difference from
+ * InputFunctionCall; the result will always be true if control returns.
+ */
+
+
+/*
+ * Call a directly-named datatype input function, with non-exception
+ * handling of "soft" errors.
+ *
+ * This is like InputFunctionCallSafe, except that it is given a direct
+ * pointer to the C function to call.  We assume that that function is
+ * strict.  Also, the function cannot be one that needs to
+ * look at FmgrInfo, since there won't be any.
  */
 
 

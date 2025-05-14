@@ -4,7 +4,7 @@
  *	  POSTGRES low-level lock mechanism
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/lock.h
@@ -18,35 +18,31 @@
 #error "lock.h may not be included from frontend code"
 #endif
 
-#include "storage/backendid.h"
+#include "lib/ilist.h"
 #include "storage/lockdefs.h"
 #include "storage/lwlock.h"
+#include "storage/procnumber.h"
 #include "storage/shmem.h"
+#include "utils/timestamp.h"
 
 /* struct PGPROC is declared in proc.h, but must forward-reference it */
 typedef struct PGPROC PGPROC;
 
-typedef struct PROC_QUEUE
-{
-	SHM_QUEUE	links;			/* head of list of PGPROC objects */
-	int			size;			/* number of entries in list */
-} PROC_QUEUE;
-
 /* GUC variables */
-extern int	max_locks_per_xact;
+extern PGDLLIMPORT int max_locks_per_xact;
 
 #ifdef LOCK_DEBUG
-extern int	Trace_lock_oidmin;
-extern bool Trace_locks;
-extern bool Trace_userlocks;
-extern int	Trace_lock_table;
-extern bool Debug_deadlocks;
+extern PGDLLIMPORT int Trace_lock_oidmin;
+extern PGDLLIMPORT bool Trace_locks;
+extern PGDLLIMPORT bool Trace_userlocks;
+extern PGDLLIMPORT int Trace_lock_table;
+extern PGDLLIMPORT bool Debug_deadlocks;
 #endif							/* LOCK_DEBUG */
 
 
 /*
  * Top-level transactions are identified by VirtualTransactionIDs comprising
- * PGPROC fields backendId and lxid.  For recovered prepared transactions, the
+ * PGPROC fields procNumber and lxid.  For recovered prepared transactions, the
  * LocalTransactionId is an ordinary XID; LOCKTAG_VIRTUALTRANSACTION never
  * refers to that kind.  These are guaranteed unique over the short term, but
  * will be reused after a database restart or XID wraparound; hence they
@@ -54,7 +50,7 @@ extern bool Debug_deadlocks;
  *
  * Note that struct VirtualTransactionId can not be assumed to be atomically
  * assignable as a whole.  However, type LocalTransactionId is assumed to
- * be atomically assignable, and the backend ID doesn't change often enough
+ * be atomically assignable, and the proc number doesn't change often enough
  * to be a problem, so we can fetch or assign the two fields separately.
  * We deliberately refrain from using the struct within PGPROC, to prevent
  * coding errors from trying to use struct assignment with it; instead use
@@ -62,7 +58,7 @@ extern bool Debug_deadlocks;
  */
 typedef struct
 {
-	BackendId	backendId;		/* backendId from PGPROC */
+	ProcNumber	procNumber;		/* proc number of the PGPROC */
 	LocalTransactionId localTransactionId;	/* lxid from PGPROC */
 } VirtualTransactionId;
 
@@ -71,16 +67,16 @@ typedef struct
 #define VirtualTransactionIdIsValid(vxid) \
 	(LocalTransactionIdIsValid((vxid).localTransactionId))
 #define VirtualTransactionIdIsRecoveredPreparedXact(vxid) \
-	((vxid).backendId == InvalidBackendId)
+	((vxid).procNumber == INVALID_PROC_NUMBER)
 #define VirtualTransactionIdEquals(vxid1, vxid2) \
-	((vxid1).backendId == (vxid2).backendId && \
+	((vxid1).procNumber == (vxid2).procNumber && \
 	 (vxid1).localTransactionId == (vxid2).localTransactionId)
 #define SetInvalidVirtualTransactionId(vxid) \
-	((vxid).backendId = InvalidBackendId, \
+	((vxid).procNumber = INVALID_PROC_NUMBER, \
 	 (vxid).localTransactionId = InvalidLocalTransactionId)
-#define GET_VXID_FROM_PGPROC(vxid, proc) \
-	((vxid).backendId = (proc).backendId, \
-	 (vxid).localTransactionId = (proc).lxid)
+#define GET_VXID_FROM_PGPROC(vxid_dst, proc) \
+	((vxid_dst).procNumber = (proc).vxid.procNumber, \
+		 (vxid_dst).localTransactionId = (proc).vxid.lxid)
 
 /* MAX_LOCKMODES cannot be larger than the # of bits in LOCKMASK */
 #define MAX_LOCKMODES		10
@@ -148,12 +144,14 @@ typedef enum LockTagType
 	LOCKTAG_SPECULATIVE_TOKEN,	/* speculative insertion Xid and token */
 	LOCKTAG_OBJECT,				/* non-relation database object */
 	LOCKTAG_USERLOCK,			/* reserved for old contrib/userlock code */
-	LOCKTAG_ADVISORY			/* advisory user locks */
+	LOCKTAG_ADVISORY,			/* advisory user locks */
+	LOCKTAG_APPLY_TRANSACTION,	/* transaction being applied on a logical
+								 * replication subscriber */
 } LockTagType;
 
-#define LOCKTAG_LAST_TYPE	LOCKTAG_ADVISORY
+#define LOCKTAG_LAST_TYPE	LOCKTAG_APPLY_TRANSACTION
 
-extern const char *const LockTagTypeNames[];
+extern PGDLLIMPORT const char *const LockTagTypeNames[];
 
 /*
  * The LOCKTAG struct is defined with malice aforethought to fit into 16
@@ -235,7 +233,7 @@ typedef struct LOCKTAG
 
 /* ID info for a virtual transaction is its VirtualTransactionId */
 #define SET_LOCKTAG_VIRTUALTRANSACTION(locktag,vxid) \
-	((locktag).locktag_field1 = (vxid).backendId, \
+	((locktag).locktag_field1 = (vxid).procNumber, \
 	 (locktag).locktag_field2 = (vxid).localTransactionId, \
 	 (locktag).locktag_field3 = 0, \
 	 (locktag).locktag_field4 = 0, \
@@ -277,6 +275,17 @@ typedef struct LOCKTAG
 	 (locktag).locktag_type = LOCKTAG_ADVISORY, \
 	 (locktag).locktag_lockmethodid = USER_LOCKMETHOD)
 
+/*
+ * ID info for a remote transaction on a logical replication subscriber is: DB
+ * OID + SUBSCRIPTION OID + TRANSACTION ID + OBJID
+ */
+#define SET_LOCKTAG_APPLY_TRANSACTION(locktag,dboid,suboid,xid,objid) \
+	((locktag).locktag_field1 = (dboid), \
+	 (locktag).locktag_field2 = (suboid), \
+	 (locktag).locktag_field3 = (xid), \
+	 (locktag).locktag_field4 = (objid), \
+	 (locktag).locktag_type = LOCKTAG_APPLY_TRANSACTION, \
+	 (locktag).locktag_lockmethodid = DEFAULT_LOCKMETHOD)
 
 /*
  * Per-locked-object lock information:
@@ -304,8 +313,8 @@ typedef struct LOCK
 	/* data */
 	LOCKMASK	grantMask;		/* bitmask for lock types already granted */
 	LOCKMASK	waitMask;		/* bitmask for lock types awaited */
-	SHM_QUEUE	procLocks;		/* list of PROCLOCK objects assoc. with lock */
-	PROC_QUEUE	waitProcs;		/* list of PGPROC objects waiting on lock */
+	dlist_head	procLocks;		/* list of PROCLOCK objects assoc. with lock */
+	dclist_head waitProcs;		/* list of PGPROC objects waiting on lock */
 	int			requested[MAX_LOCKMODES];	/* counts of requested locks */
 	int			nRequested;		/* total of requested[] array */
 	int			granted[MAX_LOCKMODES]; /* counts of granted locks */
@@ -366,8 +375,8 @@ typedef struct PROCLOCK
 	PGPROC	   *groupLeader;	/* proc's lock group leader, or proc itself */
 	LOCKMASK	holdMask;		/* bitmask for lock types currently held */
 	LOCKMASK	releaseMask;	/* bitmask for lock types to be released */
-	SHM_QUEUE	lockLink;		/* list link in LOCK's list of proclocks */
-	SHM_QUEUE	procLink;		/* list link in PGPROC's list of proclocks */
+	dlist_node	lockLink;		/* list link in LOCK's list of proclocks */
+	dlist_node	procLink;		/* list link in PGPROC's list of proclocks */
 } PROCLOCK;
 
 #define PROCLOCK_LOCKMETHOD(proclock) \
@@ -445,8 +454,9 @@ typedef struct LockInstanceData
 	LOCKTAG		locktag;		/* tag for locked object */
 	LOCKMASK	holdMask;		/* locks held by this PGPROC */
 	LOCKMODE	waitLockMode;	/* lock awaited by this PGPROC, if any */
-	BackendId	backend;		/* backend ID of this PGPROC */
-	LocalTransactionId lxid;	/* local transaction ID of this PGPROC */
+	VirtualTransactionId vxid;	/* virtual transaction ID of this PGPROC */
+	TimestampTz waitStart;		/* time at which this PGPROC started waiting
+								 * for lock */
 	int			pid;			/* pid of this PGPROC */
 	int			leaderPid;		/* pid of group leader; = pid if no group */
 	bool		fastpath;		/* taken via fastpath? */
@@ -491,7 +501,7 @@ typedef enum
 	LOCKACQUIRE_NOT_AVAIL,		/* lock not available, and dontWait=true */
 	LOCKACQUIRE_OK,				/* lock successfully acquired */
 	LOCKACQUIRE_ALREADY_HELD,	/* incremented count for lock already held */
-	LOCKACQUIRE_ALREADY_CLEAR	/* incremented count for lock already clear */
+	LOCKACQUIRE_ALREADY_CLEAR,	/* incremented count for lock already clear */
 } LockAcquireResult;
 
 /* Deadlock states identified by DeadLockCheck() */
@@ -501,7 +511,7 @@ typedef enum
 	DS_NO_DEADLOCK,				/* no deadlock detected */
 	DS_SOFT_DEADLOCK,			/* deadlock avoided by queue rearrangement */
 	DS_HARD_DEADLOCK,			/* deadlock, no way out but ERROR */
-	DS_BLOCKED_BY_AUTOVACUUM	/* no deadlock; queue blocked by autovacuum
+	DS_BLOCKED_BY_AUTOVACUUM,	/* no deadlock; queue blocked by autovacuum
 								 * worker */
 } DeadLockState;
 
@@ -529,7 +539,7 @@ typedef enum
  * used for a given lock group is determined by the group leader's pgprocno.
  */
 #define LockHashPartitionLockByProc(leader_pgproc) \
-	LockHashPartitionLock((leader_pgproc)->pgprocno)
+	LockHashPartitionLock(GetNumberFromPGProc(leader_pgproc))
 
 /*
  * function prototypes
@@ -557,7 +567,8 @@ extern void LockReleaseAll(LOCKMETHODID lockmethodid, bool allLocks);
 extern void LockReleaseSession(LOCKMETHODID lockmethodid);
 extern void LockReleaseCurrentOwner(LOCALLOCK **locallocks, int nlocks);
 extern void LockReassignCurrentOwner(LOCALLOCK **locallocks, int nlocks);
-extern bool LockHeldByMe(const LOCKTAG *locktag, LOCKMODE lockmode);
+extern bool LockHeldByMe(const LOCKTAG *locktag,
+						 LOCKMODE lockmode, bool orstronger);
 #ifdef USE_ASSERT_CHECKING
 extern HTAB *GetLockMethodLocalHash(void);
 #endif

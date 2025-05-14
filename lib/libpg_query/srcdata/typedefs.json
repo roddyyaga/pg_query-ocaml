@@ -1,8 +1,8 @@
 [
   {
     "new_type_name": "AclMode",
-    "source_type": "uint32",
-    "comment": "/*\n * Grantable rights are encoded so that we can OR them together in a bitmask.\n * The present representation of AclItem limits us to 16 distinct rights,\n * even though AclMode is defined as uint32.  See utils/acl.h.\n *\n * Caution: changing these codes breaks stored ACLs, hence forces initdb.\n */\n"
+    "source_type": "uint64",
+    "comment": "/*\n * Grantable rights are encoded so that we can OR them together in a bitmask.\n * The present representation of AclItem limits us to 32 distinct rights,\n * even though AclMode is defined as uint64.  See utils/acl.h.\n *\n * Caution: changing these codes breaks stored ACLs, hence forces initdb.\n */\n"
   },
   {
     "new_type_name": "DistinctExpr",
@@ -15,12 +15,22 @@
     "comment": "/*\n * NullIfExpr - a NULLIF expression\n *\n * Like DistinctExpr, this is represented the same as an OpExpr referencing\n * the \"=\" operator for x and y.\n */\n"
   },
   {
+    "new_type_name": "ParseLoc",
+    "source_type": "int",
+    "comment": "/*\n * Typedef for parse location.  This is just an int, but this way\n * gen_node_support.pl knows which fields should get special treatment for\n * location values.\n *\n * -1 is used for unknown.\n */\n"
+  },
+  {
     "new_type_name": "Selectivity",
     "source_type": "double",
-    "comment": "/*\n * Typedefs for identifying qualifier selectivities and plan costs as such.\n * These are just plain \"double\"s, but declaring a variable as Selectivity\n * or Cost makes the intent more obvious.\n *\n * These could have gone into plannodes.h or some such, but many files\n * depend on them...\n */\n"
+    "comment": "/*\n * Typedefs for identifying qualifier selectivities, plan costs, and row\n * counts as such.  These are just plain \"double\"s, but declaring a variable\n * as Selectivity, Cost, or Cardinality makes the intent more obvious.\n *\n * These could have gone into plannodes.h or some such, but many files\n * depend on them...\n */\n"
   },
   {
     "new_type_name": "Cost",
+    "source_type": "double",
+    "comment": null
+  },
+  {
+    "new_type_name": "Cardinality",
     "source_type": "double",
     "comment": null
   },
@@ -95,19 +105,19 @@
     "comment": "/*\n * Representation of a Name: effectively just a C string, but null-padded to\n * exactly NAMEDATALEN bytes.  The use of a struct is historical.\n */\n"
   },
   {
-    "new_type_name": "ExpandedObjectHeader",
-    "source_type": "ExpandedObjectHeader",
-    "comment": "/*\n * struct varatt_expanded is a \"TOAST pointer\" representing an out-of-line\n * Datum that is stored in memory, in some type-specific, not necessarily\n * physically contiguous format that is convenient for computation not\n * storage.  APIs for this, in particular the definition of struct\n * ExpandedObjectHeader, are in src/include/utils/expandeddatum.h.\n *\n * Note that just as for struct varatt_external, this struct is stored\n * unaligned within any containing tuple.\n */\n"
-  },
-  {
     "new_type_name": "Datum",
     "source_type": "uintptr_t",
-    "comment": "/*\n * A Datum contains either a value of a pass-by-value type or a pointer to a\n * value of a pass-by-reference type.  Therefore, we require:\n *\n * sizeof(Datum) == sizeof(void *) == 4 or 8\n *\n * The macros below and the analogous macros for other types should be used to\n * convert between a Datum and the appropriate C type.\n */\n"
+    "comment": "/*\n * A Datum contains either a value of a pass-by-value type or a pointer to a\n * value of a pass-by-reference type.  Therefore, we require:\n *\n * sizeof(Datum) == sizeof(void *) == 4 or 8\n *\n * The functions below and the analogous functions for other types should be used to\n * convert between a Datum and the appropriate C type.\n */\n"
   },
   {
     "new_type_name": "Oid",
     "source_type": "unsigned int",
     "comment": "/*\n * Object ID is a fundamental type in Postgres.\n */\n"
+  },
+  {
+    "new_type_name": "ParallelVacuumState",
+    "source_type": "ParallelVacuumState",
+    "comment": "/* Abstract type for parallel vacuum state */\n"
   },
   {
     "new_type_name": "VacAttrStatsP",
