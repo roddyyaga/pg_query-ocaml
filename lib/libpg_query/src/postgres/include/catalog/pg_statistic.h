@@ -4,7 +4,7 @@
  *	  definition of the "statistics" system catalog (pg_statistic)
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_statistic.h
@@ -29,7 +29,8 @@
 CATALOG(pg_statistic,2619,StatisticRelationId)
 {
 	/* These fields form the unique key for the entry: */
-	Oid			starelid;		/* relation containing attribute */
+	Oid			starelid BKI_LOOKUP(pg_class);	/* relation containing
+												 * attribute */
 	int16		staattnum;		/* attribute (column) stats are for */
 	bool		stainherit;		/* true if inheritance children are included */
 
@@ -90,17 +91,17 @@ CATALOG(pg_statistic,2619,StatisticRelationId)
 	int16		stakind4;
 	int16		stakind5;
 
-	Oid			staop1;
-	Oid			staop2;
-	Oid			staop3;
-	Oid			staop4;
-	Oid			staop5;
+	Oid			staop1 BKI_LOOKUP_OPT(pg_operator);
+	Oid			staop2 BKI_LOOKUP_OPT(pg_operator);
+	Oid			staop3 BKI_LOOKUP_OPT(pg_operator);
+	Oid			staop4 BKI_LOOKUP_OPT(pg_operator);
+	Oid			staop5 BKI_LOOKUP_OPT(pg_operator);
 
-	Oid			stacoll1;
-	Oid			stacoll2;
-	Oid			stacoll3;
-	Oid			stacoll4;
-	Oid			stacoll5;
+	Oid			stacoll1 BKI_LOOKUP_OPT(pg_collation);
+	Oid			stacoll2 BKI_LOOKUP_OPT(pg_collation);
+	Oid			stacoll3 BKI_LOOKUP_OPT(pg_collation);
+	Oid			stacoll4 BKI_LOOKUP_OPT(pg_collation);
+	Oid			stacoll5 BKI_LOOKUP_OPT(pg_collation);
 
 #ifdef CATALOG_VARLEN			/* variable-length fields start here */
 	float4		stanumbers1[1];
@@ -133,6 +134,14 @@ CATALOG(pg_statistic,2619,StatisticRelationId)
  */
 typedef FormData_pg_statistic *Form_pg_statistic;
 
+DECLARE_TOAST(pg_statistic, 2840, 2841);
+
+DECLARE_UNIQUE_INDEX_PKEY(pg_statistic_relid_att_inh_index, 2696, StatisticRelidAttnumInhIndexId, pg_statistic, btree(starelid oid_ops, staattnum int2_ops, stainherit bool_ops));
+
+MAKE_SYSCACHE(STATRELATTINH, pg_statistic_relid_att_inh_index, 128);
+
+DECLARE_FOREIGN_KEY((starelid, staattnum), pg_attribute, (attrelid, attnum));
+
 #ifdef EXPOSE_TO_CLIENT_CODE
 
 /*
@@ -145,6 +154,9 @@ typedef FormData_pg_statistic *Form_pg_statistic;
  * data "kind" will appear in any particular slot.  Instead, search the
  * stakind fields to see if the desired data is available.  (The standard
  * function get_attstatsslot() may be used for this.)
+ *
+ * Note: The pg_stats view needs to be modified whenever a new slot kind is
+ * added to core.
  */
 
 /*
@@ -171,7 +183,7 @@ typedef FormData_pg_statistic *Form_pg_statistic;
  * the K most common non-null values appearing in the column, and stanumbers
  * contains their frequencies (fractions of total row count).  The values
  * shall be ordered in decreasing frequency.  Note that since the arrays are
- * variable-size, K may be chosen by the statistics collector.  Values should
+ * variable-size, K may be chosen may be chosen at ANALYZE time.  Values should
  * not appear in MCV unless they have been observed to occur more than once;
  * a unique column will have no MCV slot.
  */
@@ -255,7 +267,8 @@ typedef FormData_pg_statistic *Form_pg_statistic;
  * a format similar to STATISTIC_KIND_HISTOGRAM: it contains M (>=2) range
  * values that divide the column data values into M-1 bins of approximately
  * equal population. The lengths are stored as float8s, as measured by the
- * range type's subdiff function. Only non-null rows are considered.
+ * range type's subdiff function. Only non-null, non-empty rows are
+ * considered.
  */
 #define STATISTIC_KIND_RANGE_LENGTH_HISTOGRAM  6
 

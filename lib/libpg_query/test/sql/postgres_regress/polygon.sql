@@ -32,7 +32,7 @@ INSERT INTO POLYGON_TBL(f1) VALUES ('(0,1,2,3');
 INSERT INTO POLYGON_TBL(f1) VALUES ('asdf');
 
 
-SELECT '' AS four, * FROM POLYGON_TBL;
+SELECT * FROM POLYGON_TBL;
 
 --
 -- Test the SP-GiST index
@@ -140,3 +140,9 @@ WHERE seq.id IS NULL OR idx.id IS NULL;
 RESET enable_seqscan;
 RESET enable_indexscan;
 RESET enable_bitmapscan;
+
+-- test non-error-throwing API for some core types
+SELECT pg_input_is_valid('(2.0,0.8,0.1)', 'polygon');
+SELECT * FROM pg_input_error_info('(2.0,0.8,0.1)', 'polygon');
+SELECT pg_input_is_valid('(2.0,xyz)', 'polygon');
+SELECT * FROM pg_input_error_info('(2.0,xyz)', 'polygon');

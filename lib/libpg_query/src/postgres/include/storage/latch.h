@@ -90,7 +90,7 @@
  * efficient than using WaitLatch or WaitLatchOrSocket.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/latch.h
@@ -102,6 +102,8 @@
 
 #include <signal.h>
 
+#include "utils/resowner.h"
+
 /*
  * Latch structure should be treated as opaque and only accessed through
  * the public functions. It is defined here to allow embedding Latches as
@@ -110,6 +112,7 @@
 typedef struct Latch
 {
 	sig_atomic_t is_set;
+	sig_atomic_t maybe_sleeping;
 	bool		is_shared;
 	int			owner_pid;
 #ifdef WIN32
@@ -133,10 +136,18 @@ typedef struct Latch
 /* avoid having to deal with case on platforms not requiring it */
 #define WL_SOCKET_CONNECTED  WL_SOCKET_WRITEABLE
 #endif
-
+#define WL_SOCKET_CLOSED 	 (1 << 7)
+#ifdef WIN32
+#define WL_SOCKET_ACCEPT	 (1 << 8)
+#else
+/* avoid having to deal with case on platforms not requiring it */
+#define WL_SOCKET_ACCEPT	WL_SOCKET_READABLE
+#endif
 #define WL_SOCKET_MASK		(WL_SOCKET_READABLE | \
 							 WL_SOCKET_WRITEABLE | \
-							 WL_SOCKET_CONNECTED)
+							 WL_SOCKET_CONNECTED | \
+							 WL_SOCKET_ACCEPT | \
+							 WL_SOCKET_CLOSED)
 
 typedef struct WaitEvent
 {
@@ -162,9 +173,11 @@ extern void OwnLatch(Latch *latch);
 extern void DisownLatch(Latch *latch);
 extern void SetLatch(Latch *latch);
 extern void ResetLatch(Latch *latch);
+extern void ShutdownLatchSupport(void);
 
-extern WaitEventSet *CreateWaitEventSet(MemoryContext context, int nevents);
+extern WaitEventSet *CreateWaitEventSet(ResourceOwner resowner, int nevents);
 extern void FreeWaitEventSet(WaitEventSet *set);
+extern void FreeWaitEventSetAfterFork(WaitEventSet *set);
 extern int	AddWaitEventToSet(WaitEventSet *set, uint32 events, pgsocket fd,
 							  Latch *latch, void *user_data);
 extern void ModifyWaitEvent(WaitEventSet *set, int pos, uint32 events, Latch *latch);
@@ -176,15 +189,8 @@ extern int	WaitLatch(Latch *latch, int wakeEvents, long timeout,
 					  uint32 wait_event_info);
 extern int	WaitLatchOrSocket(Latch *latch, int wakeEvents,
 							  pgsocket sock, long timeout, uint32 wait_event_info);
-
-/*
- * Unix implementation uses SIGUSR1 for inter-process signaling.
- * Win32 doesn't need this.
- */
-#ifndef WIN32
-extern void latch_sigusr1_handler(void);
-#else
-#define latch_sigusr1_handler()  ((void) 0)
-#endif
+extern void InitializeLatchWaitSet(void);
+extern int	GetNumRegisteredWaitEvents(WaitEventSet *set);
+extern bool WaitEventSetCanReportClosed(void);
 
 #endif							/* LATCH_H */

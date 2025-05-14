@@ -3,7 +3,7 @@
  * float.h
  *	  Definitions for the built-in floating-point types
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -17,8 +17,8 @@
 
 #include <math.h>
 
+/* X/Open (XSI) requires <math.h> to provide M_PI, but core POSIX does not */
 #ifndef M_PI
-/* From my RH5.2 gcc math.h file - thomas 2000-04-03 */
 #define M_PI 3.14159265358979323846
 #endif
 
@@ -42,10 +42,11 @@ extern void float_underflow_error(void) pg_attribute_noreturn();
 extern void float_zero_divide_error(void) pg_attribute_noreturn();
 extern int	is_infinite(float8 val);
 extern float8 float8in_internal(char *num, char **endptr_p,
-								const char *type_name, const char *orig_string);
-extern float8 float8in_internal_opt_error(char *num, char **endptr_p,
-										  const char *type_name, const char *orig_string,
-										  bool *have_error);
+								const char *type_name, const char *orig_string,
+								struct Node *escontext);
+extern float4 float4in_internal(char *num, char **endptr_p,
+								const char *type_name, const char *orig_string,
+								struct Node *escontext);
 extern char *float8out_internal(float8 num);
 extern int	float4_cmp_internal(float4 a, float4 b);
 extern int	float8_cmp_internal(float8 a, float8 b);
@@ -222,12 +223,12 @@ float4_div(const float4 val1, const float4 val2)
 {
 	float4		result;
 
-	if (unlikely(val2 == 0.0f))
+	if (unlikely(val2 == 0.0f) && !isnan(val1))
 		float_zero_divide_error();
 	result = val1 / val2;
-	if (unlikely(isinf(result)) && !isinf(val1) && !isinf(val2))
+	if (unlikely(isinf(result)) && !isinf(val1))
 		float_overflow_error();
-	if (unlikely(result == 0.0f) && val1 != 0.0f)
+	if (unlikely(result == 0.0f) && val1 != 0.0f && !isinf(val2))
 		float_underflow_error();
 
 	return result;
@@ -238,12 +239,12 @@ float8_div(const float8 val1, const float8 val2)
 {
 	float8		result;
 
-	if (unlikely(val2 == 0.0))
+	if (unlikely(val2 == 0.0) && !isnan(val1))
 		float_zero_divide_error();
 	result = val1 / val2;
-	if (unlikely(isinf(result)) && !isinf(val1) && !isinf(val2))
+	if (unlikely(isinf(result)) && !isinf(val1))
 		float_overflow_error();
-	if (unlikely(result == 0.0) && val1 != 0.0)
+	if (unlikely(result == 0.0) && val1 != 0.0 && !isinf(val2))
 		float_underflow_error();
 
 	return result;

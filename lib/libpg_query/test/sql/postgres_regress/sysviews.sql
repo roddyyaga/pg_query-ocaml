@@ -12,6 +12,26 @@ select count(*) >= 0 as ok from pg_available_extension_versions;
 
 select count(*) >= 0 as ok from pg_available_extensions;
 
+-- The entire output of pg_backend_memory_contexts is not stable,
+-- we test only the existence and basic condition of TopMemoryContext.
+select name, ident, parent, level, total_bytes >= free_bytes
+  from pg_backend_memory_contexts where level = 0;
+
+-- We can exercise some MemoryContext type stats functions.  Most of the
+-- column values are too platform-dependant to display.
+
+-- Ensure stats from the bump allocator look sane.  Bump isn't a commonly
+-- used context, but it is used in tuplesort.c, so open a cursor to keep
+-- the tuplesort alive long enough for us to query the context stats.
+begin;
+declare cur cursor for select left(a,10), b
+  from (values(repeat('a', 512 * 1024),1),(repeat('b', 512),2)) v(a,b)
+  order by v.a desc;
+fetch 1 from cur;
+select name, parent, total_bytes > 0, total_nblocks, free_bytes > 0, free_chunks
+from pg_backend_memory_contexts where name = 'Caller tuples';
+rollback;
+
 -- At introduction, pg_config had 23 entries; it may grow
 select count(*) > 20 as ok from pg_config;
 
@@ -20,8 +40,13 @@ select count(*) = 0 as ok from pg_cursors;
 
 select count(*) >= 0 as ok from pg_file_settings;
 
--- There will surely be at least one rule
-select count(*) > 0 as ok from pg_hba_file_rules;
+-- There will surely be at least one rule, with no errors.
+select count(*) > 0 as ok, count(*) FILTER (WHERE error IS NOT NULL) = 0 AS no_err
+  from pg_hba_file_rules;
+
+-- There may be no rules, and there should be no errors.
+select count(*) >= 0 as ok, count(*) FILTER (WHERE error IS NOT NULL) = 0 AS no_err
+  from pg_ident_file_mappings;
 
 -- There will surely be at least one active lock
 select count(*) > 0 as ok from pg_locks;
@@ -35,12 +60,20 @@ select count(*) >= 0 as ok from pg_prepared_xacts;
 -- There will surely be at least one SLRU cache
 select count(*) > 0 as ok from pg_stat_slru;
 
+-- There must be only one record
+select count(*) = 1 as ok from pg_stat_wal;
+
 -- We expect no walreceiver running in this test
 select count(*) = 0 as ok from pg_stat_wal_receiver;
 
 -- This is to record the prevailing planner enable_foo settings during
 -- a regression test run.
 select name, setting from pg_settings where name like 'enable%';
+
+-- There are always wait event descriptions for various types.  InjectionPoint
+-- may be present or absent, depending on history since last postmaster start.
+select type, count(*) > 0 as ok FROM pg_wait_events
+  where type <> 'InjectionPoint' group by type order by type COLLATE "C";
 
 -- Test that the pg_timezone_names and pg_timezone_abbrevs views are
 -- more-or-less working.  We can't test their contents in any great detail

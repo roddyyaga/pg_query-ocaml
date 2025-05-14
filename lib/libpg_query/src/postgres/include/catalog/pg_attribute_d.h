@@ -3,7 +3,7 @@
  * pg_attribute_d.h
  *    Macro definitions for pg_attribute
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * NOTES
@@ -20,19 +20,21 @@
 
 #define AttributeRelationId 1249
 #define AttributeRelation_Rowtype_Id 75
+#define AttributeRelidNameIndexId 2658
+#define AttributeRelidNumIndexId 2659
 
 #define Anum_pg_attribute_attrelid 1
 #define Anum_pg_attribute_attname 2
 #define Anum_pg_attribute_atttypid 3
-#define Anum_pg_attribute_attstattarget 4
-#define Anum_pg_attribute_attlen 5
-#define Anum_pg_attribute_attnum 6
-#define Anum_pg_attribute_attndims 7
-#define Anum_pg_attribute_attcacheoff 8
-#define Anum_pg_attribute_atttypmod 9
-#define Anum_pg_attribute_attbyval 10
+#define Anum_pg_attribute_attlen 4
+#define Anum_pg_attribute_attnum 5
+#define Anum_pg_attribute_attcacheoff 6
+#define Anum_pg_attribute_atttypmod 7
+#define Anum_pg_attribute_attndims 8
+#define Anum_pg_attribute_attbyval 9
+#define Anum_pg_attribute_attalign 10
 #define Anum_pg_attribute_attstorage 11
-#define Anum_pg_attribute_attalign 12
+#define Anum_pg_attribute_attcompression 12
 #define Anum_pg_attribute_attnotnull 13
 #define Anum_pg_attribute_atthasdef 14
 #define Anum_pg_attribute_atthasmissing 15
@@ -42,12 +44,13 @@
 #define Anum_pg_attribute_attislocal 19
 #define Anum_pg_attribute_attinhcount 20
 #define Anum_pg_attribute_attcollation 21
-#define Anum_pg_attribute_attacl 22
-#define Anum_pg_attribute_attoptions 23
-#define Anum_pg_attribute_attfdwoptions 24
-#define Anum_pg_attribute_attmissingval 25
+#define Anum_pg_attribute_attstattarget 22
+#define Anum_pg_attribute_attacl 23
+#define Anum_pg_attribute_attoptions 24
+#define Anum_pg_attribute_attfdwoptions 25
+#define Anum_pg_attribute_attmissingval 26
 
-#define Natts_pg_attribute 25
+#define Natts_pg_attribute 26
 
 
 #define		  ATTRIBUTE_IDENTITY_ALWAYS		'a'

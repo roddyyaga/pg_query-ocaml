@@ -12,7 +12,7 @@
  * can be canceled prior to the fulfillment of the condition) and do not
  * use pointers internally (so that they are safe to use within DSMs).
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/condition_variable.h
@@ -23,13 +23,24 @@
 #define CONDITION_VARIABLE_H
 
 #include "storage/proclist_types.h"
-#include "storage/s_lock.h"
+#include "storage/spin.h"
 
 typedef struct
 {
 	slock_t		mutex;			/* spinlock protecting the wakeup list */
 	proclist_head wakeup;		/* list of wake-able processes */
 } ConditionVariable;
+
+/*
+ * Pad a condition variable to a power-of-two size so that an array of
+ * condition variables does not cross a cache line boundary.
+ */
+#define CV_MINIMAL_SIZE		(sizeof(ConditionVariable) <= 16 ? 16 : 32)
+typedef union ConditionVariableMinimallyPadded
+{
+	ConditionVariable cv;
+	char		pad[CV_MINIMAL_SIZE];
+} ConditionVariableMinimallyPadded;
 
 /* Initialize a condition variable. */
 extern void ConditionVariableInit(ConditionVariable *cv);
@@ -45,7 +56,7 @@ extern void ConditionVariableInit(ConditionVariable *cv);
 extern void ConditionVariableSleep(ConditionVariable *cv, uint32 wait_event_info);
 extern bool ConditionVariableTimedSleep(ConditionVariable *cv, long timeout,
 										uint32 wait_event_info);
-extern void ConditionVariableCancelSleep(void);
+extern bool ConditionVariableCancelSleep(void);
 
 /*
  * Optionally, ConditionVariablePrepareToSleep can be called before entering

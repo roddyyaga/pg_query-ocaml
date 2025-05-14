@@ -10,7 +10,7 @@
  *	  Support routines for various kinds of object creation.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -45,8 +45,7 @@
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
 #include "parser/parse_type.h"
-#include "parser/scansup.h"
-#include "utils/builtins.h"
+#include "utils/fmgrprotos.h"
 
 /*
  * Extract a string value (otherwise uninterpreted) from a DefElem.
@@ -93,6 +92,11 @@ defGetInt32(DefElem *def)
 
 
 /*
+ * Extract an OID value from a DefElem.
+ */
+
+
+/*
  * Extract a possibly-qualified name (as a List of Strings) from a DefElem.
  */
 
@@ -113,5 +117,10 @@ defGetInt32(DefElem *def)
 
 /*
  * Extract a list of string values (otherwise uninterpreted) from a DefElem.
+ */
+
+
+/*
+ * Raise an error about a conflicting DefElem.
  */
 

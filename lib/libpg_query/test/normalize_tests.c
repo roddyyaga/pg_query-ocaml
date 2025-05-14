@@ -1,8 +1,9 @@
+// NOTE: make sure to keep this in sync with normalize_utility_tests.c
 const char* tests[] = {
   "SELECT 1",
   "SELECT $1",
-	"SELECT $1, 1",
-	"SELECT $1, $2",
+  "SELECT $1, 1",
+  "SELECT $1, $2",
   "CREATE ROLE postgres PASSWORD 'xyz'",
   "CREATE ROLE postgres PASSWORD $1",
   "CREATE ROLE postgres ENCRYPTED PASSWORD 'xyz'",
@@ -35,6 +36,8 @@ const char* tests[] = {
   "CREATE USER MAPPING FOR bob SERVER foo OPTIONS (user $1, password $2)",
   "ALTER USER MAPPING FOR bob SERVER foo OPTIONS (SET password 'public')",
   "ALTER USER MAPPING FOR bob SERVER foo OPTIONS (SET password $1)",
+  "MERGE into measurement m USING new_measurement nm ON (m.city_id = nm.city_id and m.logdate=nm.logdate) WHEN MATCHED AND nm.peaktemp IS NULL THEN DELETE WHEN MATCHED THEN UPDATE SET peaktemp = greatest(m.peaktemp, nm.peaktemp), unitsales = m.unitsales + coalesce(nm.unitsales, 0) WHEN NOT MATCHED THEN INSERT (city_id, logdate, peaktemp, unitsales) VALUES (city_id, logdate, peaktemp, unitsales)",
+  "MERGE into measurement m USING new_measurement nm ON (m.city_id = nm.city_id and m.logdate=nm.logdate) WHEN MATCHED AND nm.peaktemp IS NULL THEN DELETE WHEN MATCHED THEN UPDATE SET peaktemp = greatest(m.peaktemp, nm.peaktemp), unitsales = m.unitsales + coalesce(nm.unitsales, $1) WHEN NOT MATCHED THEN INSERT (city_id, logdate, peaktemp, unitsales) VALUES (city_id, logdate, peaktemp, unitsales)",
   // These below are as expected, though questionable if upstream shouldn't be
   // fixed as this could bloat pg_stat_statements
   "DECLARE cursor_b CURSOR FOR SELECT * FROM x WHERE id = 123",
@@ -43,6 +46,8 @@ const char* tests[] = {
   "FETCH 1000 FROM cursor_a",
   "CLOSE cursor_a",
   "CLOSE cursor_a",
+  "SELECT 1; ALTER USER a WITH PASSWORD 'b'",
+  "SELECT $1; ALTER USER a WITH PASSWORD $2",
 };
 
-size_t testsLength = __LINE__ - 6;
+size_t testsLength = __LINE__ - 7;

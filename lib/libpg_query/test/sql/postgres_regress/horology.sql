@@ -1,9 +1,9 @@
 --
 -- HOROLOGY
 --
-SET DateStyle = 'Postgres, MDY';
 
-SHOW TimeZone;  -- Many of these tests depend on the prevailing setting
+SHOW TimeZone;  -- Many of these tests depend on the prevailing settings
+SHOW DateStyle;
 
 --
 -- Test various input formats
@@ -20,15 +20,13 @@ SELECT timestamp with time zone '2001-12-27 04:05:06.789-08';
 SELECT timestamp with time zone '2001.12.27 04:05:06.789-08';
 SELECT timestamp with time zone '2001/12/27 04:05:06.789-08';
 SELECT timestamp with time zone '12/27/2001 04:05:06.789-08';
+SELECT timestamp with time zone '2001-12-27 04:05:06.789 MET DST';
+SELECT timestamp with time zone '2001-12-27 allballs';
 -- should fail in mdy mode:
 SELECT timestamp with time zone '27/12/2001 04:05:06.789-08';
 set datestyle to dmy;
 SELECT timestamp with time zone '27/12/2001 04:05:06.789-08';
 reset datestyle;
-SELECT timestamp with time zone 'Y2001M12D27H04M05S06.789+08';
-SELECT timestamp with time zone 'Y2001M12D27H04M05S06.789-08';
-SELECT timestamp with time zone 'Y2001M12D27H04MM05S06.789+08';
-SELECT timestamp with time zone 'Y2001M12D27H04MM05S06.789-08';
 SELECT timestamp with time zone 'J2452271+08';
 SELECT timestamp with time zone 'J2452271-08';
 SELECT timestamp with time zone 'J2452271.5+08';
@@ -57,10 +55,75 @@ SELECT time with time zone 'T040506.789+08';
 SELECT time with time zone 'T040506.789-08';
 SELECT time with time zone 'T040506.789 +08';
 SELECT time with time zone 'T040506.789 -08';
+-- time with time zone should accept a date for DST resolution purposes
+SELECT time with time zone 'T040506.789 America/Los_Angeles';
+SELECT time with time zone '2001-12-27 T040506.789 America/Los_Angeles';
+SELECT time with time zone 'J2452271 T040506.789 America/Los_Angeles';
+-- Check time formats required by ISO 8601
+SELECT time without time zone '040506.07';
+SELECT time without time zone '04:05:06.07';
+SELECT time without time zone '040506';
+SELECT time without time zone '04:05:06';
+SELECT time without time zone '0405';
+SELECT time without time zone '04:05';
+SELECT time without time zone 'T040506.07';
+SELECT time without time zone 'T04:05:06.07';
+SELECT time without time zone 'T040506';
+SELECT time without time zone 'T04:05:06';
+SELECT time without time zone 'T0405';
+SELECT time without time zone 'T04:05';
+-- 8601 says "Thh" is allowed, but we intentionally reject it as too vague
+SELECT time without time zone 'T04';
+SELECT time with time zone '040506.07+08';
+SELECT time with time zone '04:05:06.07+08';
+SELECT time with time zone '040506+08';
+SELECT time with time zone '04:05:06+08';
+SELECT time with time zone '0405+08';
+SELECT time with time zone '04:05+08';
+SELECT time with time zone 'T040506.07+08';
+SELECT time with time zone 'T04:05:06.07+08';
+SELECT time with time zone 'T040506+08';
+SELECT time with time zone 'T04:05:06+08';
+SELECT time with time zone 'T0405+08';
+SELECT time with time zone 'T04:05+08';
+-- 8601 says "Thh" is allowed, but we intentionally reject it as too vague
+SELECT time with time zone 'T04+08';
 SET DateStyle = 'Postgres, MDY';
 -- Check Julian dates BC
 SELECT date 'J1520447' AS "Confucius' Birthday";
 SELECT date 'J0' AS "Julian Epoch";
+
+-- test error on dangling Julian units
+SELECT date '1995-08-06  J J J';
+SELECT date 'J J 1520447';
+
+-- We used to accept this input style, but it was based on a misreading
+-- of ISO8601, and it was never documented anyway
+SELECT timestamp with time zone 'Y2001M12D27H04M05S06.789+08';
+SELECT timestamp with time zone 'Y2001M12D27H04MM05S06.789-08';
+
+-- conflicting fields should throw errors
+SELECT date '1995-08-06 epoch';
+SELECT date '1995-08-06 infinity';
+SELECT date '1995-08-06 -infinity';
+SELECT date 'today infinity';
+SELECT date '-infinity infinity';
+SELECT timestamp '1995-08-06 epoch';
+SELECT timestamp '1995-08-06 infinity';
+SELECT timestamp '1995-08-06 -infinity';
+SELECT timestamp 'epoch 01:01:01';
+SELECT timestamp 'infinity 01:01:01';
+SELECT timestamp '-infinity 01:01:01';
+SELECT timestamp 'now epoch';
+SELECT timestamp '-infinity infinity';
+SELECT timestamptz '1995-08-06 epoch';
+SELECT timestamptz '1995-08-06 infinity';
+SELECT timestamptz '1995-08-06 -infinity';
+SELECT timestamptz 'epoch 01:01:01';
+SELECT timestamptz 'infinity 01:01:01';
+SELECT timestamptz '-infinity 01:01:01';
+SELECT timestamptz 'now epoch';
+SELECT timestamptz '-infinity infinity';
 
 --
 -- date, time arithmetic
@@ -86,6 +149,8 @@ SELECT timestamp without time zone '1999-12-01' + interval '1 month - 1 second' 
 SELECT timestamp without time zone 'Jan 1, 4713 BC' + interval '106000000 days' AS "Feb 23, 285506";
 SELECT timestamp without time zone 'Jan 1, 4713 BC' + interval '107000000 days' AS "Jan 20, 288244";
 SELECT timestamp without time zone 'Jan 1, 4713 BC' + interval '109203489 days' AS "Dec 31, 294276";
+SELECT timestamp without time zone '2000-01-01' - interval '2483590 days' AS "out of range";
+SELECT timestamp without time zone '294276-12-31 23:59:59' + interval '9223372036854775807 microseconds' AS "out of range";
 SELECT timestamp without time zone '12/31/294276' - timestamp without time zone '12/23/1999' AS "106751991 Days";
 
 -- Shorthand values
@@ -110,13 +175,15 @@ SELECT date '1994-01-01' + time '10:00' AS "Jan_01_1994_10am";
 SELECT date '1994-01-01' + timetz '11:00-5' AS "Jan_01_1994_8am";
 SELECT timestamptz(date '1994-01-01', time with time zone '11:00-5') AS "Jan_01_1994_8am";
 
-SELECT '' AS "64", d1 + interval '1 year' AS one_year FROM TIMESTAMP_TBL;
-SELECT '' AS "64", d1 - interval '1 year' AS one_year FROM TIMESTAMP_TBL;
+SELECT d1 + interval '1 year' AS one_year FROM TIMESTAMP_TBL;
+SELECT d1 - interval '1 year' AS one_year FROM TIMESTAMP_TBL;
 
 SELECT timestamp with time zone '1996-03-01' - interval '1 second' AS "Feb 29";
 SELECT timestamp with time zone '1999-03-01' - interval '1 second' AS "Feb 28";
 SELECT timestamp with time zone '2000-03-01' - interval '1 second' AS "Feb 29";
 SELECT timestamp with time zone '1999-12-01' + interval '1 month - 1 second' AS "Dec 31";
+SELECT timestamp with time zone '2000-01-01' - interval '2483590 days' AS "out of range";
+SELECT timestamp with time zone '294276-12-31 23:59:59 UTC' + interval '9223372036854775807 microseconds' AS "out of range";
 
 SELECT (timestamp with time zone 'today' = (timestamp with time zone 'yesterday' + interval '1 day')) as "True";
 SELECT (timestamp with time zone 'today' = (timestamp with time zone 'tomorrow' - interval '1 day')) as "True";
@@ -139,8 +206,8 @@ SELECT timestamptz(date '1994-01-01', time with time zone '11:00-8') AS "Jan_01_
 SELECT timestamptz(date '1994-01-01', time with time zone '10:00-8') AS "Jan_01_1994_10am";
 SELECT timestamptz(date '1994-01-01', time with time zone '11:00-5') AS "Jan_01_1994_8am";
 
-SELECT '' AS "64", d1 + interval '1 year' AS one_year FROM TIMESTAMPTZ_TBL;
-SELECT '' AS "64", d1 - interval '1 year' AS one_year FROM TIMESTAMPTZ_TBL;
+SELECT d1 + interval '1 year' AS one_year FROM TIMESTAMPTZ_TBL;
+SELECT d1 - interval '1 year' AS one_year FROM TIMESTAMPTZ_TBL;
 
 --
 -- time, interval arithmetic
@@ -148,6 +215,8 @@ SELECT '' AS "64", d1 - interval '1 year' AS one_year FROM TIMESTAMPTZ_TBL;
 
 SELECT CAST(time '01:02' AS interval) AS "+01:02";
 SELECT CAST(interval '02:03' AS time) AS "02:03:00";
+SELECT CAST(interval '-02:03' AS time) AS "21:57:00";
+SELECT CAST(interval '-9223372022400000000 us' AS time) AS "00:00:00";
 SELECT time '01:30' + interval '02:01' AS "03:31:00";
 SELECT time '01:30' - interval '02:01' AS "23:29:00";
 SELECT time '02:30' + interval '36:01' AS "14:31:00";
@@ -177,10 +246,12 @@ SELECT t.d1 AS t, i.f1 AS i, t.d1 + i.f1 AS "add", t.d1 - i.f1 AS "subtract"
 
 SELECT t.f1 AS t, i.f1 AS i, t.f1 + i.f1 AS "add", t.f1 - i.f1 AS "subtract"
   FROM TIME_TBL t, INTERVAL_TBL i
+  WHERE isfinite(i.f1)
   ORDER BY 1,2;
 
 SELECT t.f1 AS t, i.f1 AS i, t.f1 + i.f1 AS "add", t.f1 - i.f1 AS "subtract"
   FROM TIMETZ_TBL t, INTERVAL_TBL i
+  WHERE isfinite(i.f1)
   ORDER BY 1,2;
 
 -- SQL9x OVERLAPS operator
@@ -247,26 +318,25 @@ INSERT INTO TEMP_TIMESTAMP (f1)
   WHERE d1 BETWEEN '13-jun-1957' AND '1-jan-1997'
    OR d1 BETWEEN '1-jan-1999' AND '1-jan-2010';
 
-SELECT '' AS "16", f1 AS "timestamp"
+SELECT f1 AS "timestamp"
   FROM TEMP_TIMESTAMP
   ORDER BY "timestamp";
 
-SELECT '' AS "160", d.f1 AS "timestamp", t.f1 AS "interval", d.f1 + t.f1 AS plus
+SELECT d.f1 AS "timestamp", t.f1 AS "interval", d.f1 + t.f1 AS plus
   FROM TEMP_TIMESTAMP d, INTERVAL_TBL t
   ORDER BY plus, "timestamp", "interval";
 
-SELECT '' AS "160", d.f1 AS "timestamp", t.f1 AS "interval", d.f1 - t.f1 AS minus
+SELECT d.f1 AS "timestamp", t.f1 AS "interval", d.f1 - t.f1 AS minus
   FROM TEMP_TIMESTAMP d, INTERVAL_TBL t
-  WHERE isfinite(d.f1)
   ORDER BY minus, "timestamp", "interval";
 
-SELECT '' AS "16", d.f1 AS "timestamp",
+SELECT d.f1 AS "timestamp",
    timestamp with time zone '1980-01-06 00:00 GMT' AS gpstime_zero,
    d.f1 - timestamp with time zone '1980-01-06 00:00 GMT' AS difference
   FROM TEMP_TIMESTAMP d
   ORDER BY difference;
 
-SELECT '' AS "226", d1.f1 AS timestamp1, d2.f1 AS timestamp2, d1.f1 - d2.f1 AS difference
+SELECT d1.f1 AS timestamp1, d2.f1 AS timestamp2, d1.f1 - d2.f1 AS difference
   FROM TEMP_TIMESTAMP d1, TEMP_TIMESTAMP d2
   ORDER BY timestamp1, timestamp2, difference;
 
@@ -274,7 +344,7 @@ SELECT '' AS "226", d1.f1 AS timestamp1, d2.f1 AS timestamp2, d1.f1 - d2.f1 AS d
 -- Conversions
 --
 
-SELECT '' AS "16", f1 AS "timestamp", date(f1) AS date
+SELECT f1 AS "timestamp", date(f1) AS date
   FROM TEMP_TIMESTAMP
   WHERE f1 <> timestamp 'now'
   ORDER BY date, "timestamp";
@@ -307,6 +377,34 @@ SELECT '2020-10-05'::timestamptz >= '4714-11-24 BC'::timestamp as t;
 RESET TimeZone;
 
 --
+-- Tests for BETWEEN
+--
+
+explain (costs off)
+select count(*) from date_tbl
+  where f1 between '1997-01-01' and '1998-01-01';
+select count(*) from date_tbl
+  where f1 between '1997-01-01' and '1998-01-01';
+
+explain (costs off)
+select count(*) from date_tbl
+  where f1 not between '1997-01-01' and '1998-01-01';
+select count(*) from date_tbl
+  where f1 not between '1997-01-01' and '1998-01-01';
+
+explain (costs off)
+select count(*) from date_tbl
+  where f1 between symmetric '1997-01-01' and '1998-01-01';
+select count(*) from date_tbl
+  where f1 between symmetric '1997-01-01' and '1998-01-01';
+
+explain (costs off)
+select count(*) from date_tbl
+  where f1 not between symmetric '1997-01-01' and '1998-01-01';
+select count(*) from date_tbl
+  where f1 not between symmetric '1997-01-01' and '1998-01-01';
+
+--
 -- Formats
 --
 
@@ -314,17 +412,17 @@ SET DateStyle TO 'US,Postgres';
 
 SHOW DateStyle;
 
-SELECT '' AS "64", d1 AS us_postgres FROM TIMESTAMP_TBL;
+SELECT d1 AS us_postgres FROM TIMESTAMP_TBL;
 
 SET DateStyle TO 'US,ISO';
 
-SELECT '' AS "64", d1 AS us_iso FROM TIMESTAMP_TBL;
+SELECT d1 AS us_iso FROM TIMESTAMP_TBL;
 
 SET DateStyle TO 'US,SQL';
 
 SHOW DateStyle;
 
-SELECT '' AS "64", d1 AS us_sql FROM TIMESTAMP_TBL;
+SELECT d1 AS us_sql FROM TIMESTAMP_TBL;
 
 SET DateStyle TO 'European,Postgres';
 
@@ -334,19 +432,19 @@ INSERT INTO TIMESTAMP_TBL VALUES('13/06/1957');
 
 SELECT count(*) as one FROM TIMESTAMP_TBL WHERE d1 = 'Jun 13 1957';
 
-SELECT '' AS "65", d1 AS european_postgres FROM TIMESTAMP_TBL;
+SELECT d1 AS european_postgres FROM TIMESTAMP_TBL;
 
 SET DateStyle TO 'European,ISO';
 
 SHOW DateStyle;
 
-SELECT '' AS "65", d1 AS european_iso FROM TIMESTAMP_TBL;
+SELECT d1 AS european_iso FROM TIMESTAMP_TBL;
 
 SET DateStyle TO 'European,SQL';
 
 SHOW DateStyle;
 
-SELECT '' AS "65", d1 AS european_sql FROM TIMESTAMP_TBL;
+SELECT d1 AS european_sql FROM TIMESTAMP_TBL;
 
 RESET DateStyle;
 
@@ -436,7 +534,19 @@ SELECT to_timestamp('2011-12-18 11:38 +05:20', 'YYYY-MM-DD HH12:MI TZH:TZM');
 SELECT to_timestamp('2011-12-18 11:38 -05:20', 'YYYY-MM-DD HH12:MI TZH:TZM');
 SELECT to_timestamp('2011-12-18 11:38 20',     'YYYY-MM-DD HH12:MI TZM');
 
-SELECT to_timestamp('2011-12-18 11:38 PST', 'YYYY-MM-DD HH12:MI TZ');  -- NYI
+SELECT to_timestamp('2011-12-18 11:38 EST', 'YYYY-MM-DD HH12:MI TZ');
+SELECT to_timestamp('2011-12-18 11:38 -05', 'YYYY-MM-DD HH12:MI TZ');
+SELECT to_timestamp('2011-12-18 11:38 +01:30', 'YYYY-MM-DD HH12:MI TZ');
+SELECT to_timestamp('2011-12-18 11:38 MSK', 'YYYY-MM-DD HH12:MI TZ');  -- dyntz
+SELECT to_timestamp('2011-12-18 11:38ESTFOO24', 'YYYY-MM-DD HH12:MITZFOOSS');
+SELECT to_timestamp('2011-12-18 11:38-05FOO24', 'YYYY-MM-DD HH12:MITZFOOSS');
+SELECT to_timestamp('2011-12-18 11:38 JUNK', 'YYYY-MM-DD HH12:MI TZ');  -- error
+SELECT to_timestamp('2011-12-18 11:38 ...', 'YYYY-MM-DD HH12:MI TZ');  -- error
+
+SELECT to_timestamp('2011-12-18 11:38 -05', 'YYYY-MM-DD HH12:MI OF');
+SELECT to_timestamp('2011-12-18 11:38 +01:30', 'YYYY-MM-DD HH12:MI OF');
+SELECT to_timestamp('2011-12-18 11:38 +xyz', 'YYYY-MM-DD HH12:MI OF');  -- error
+SELECT to_timestamp('2011-12-18 11:38 +01:xyz', 'YYYY-MM-DD HH12:MI OF');  -- error
 
 SELECT to_timestamp('2018-11-02 12:34:56.025', 'YYYY-MM-DD HH24:MI:SS.MS');
 
@@ -448,6 +558,7 @@ SELECT i, to_timestamp('2018-11-02 12:34:56.1234', 'YYYY-MM-DD HH24:MI:SS.FF' ||
 SELECT i, to_timestamp('2018-11-02 12:34:56.12345', 'YYYY-MM-DD HH24:MI:SS.FF' || i) FROM generate_series(1, 6) i;
 SELECT i, to_timestamp('2018-11-02 12:34:56.123456', 'YYYY-MM-DD HH24:MI:SS.FF' || i) FROM generate_series(1, 6) i;
 SELECT i, to_timestamp('2018-11-02 12:34:56.123456789', 'YYYY-MM-DD HH24:MI:SS.FF' || i) FROM generate_series(1, 6) i;
+SELECT i, to_timestamp('20181102123456123456', 'YYYYMMDDHH24MISSFF' || i) FROM generate_series(1, 6) i;
 
 SELECT to_date('1 4 1902', 'Q MM YYYY');  -- Q is ignored
 SELECT to_date('3 4 21 01', 'W MM CC YY');
@@ -551,6 +662,10 @@ SELECT to_date('2016 366', 'YYYY DDD');  -- ok
 SELECT to_date('2016 367', 'YYYY DDD');
 SELECT to_date('0000-02-01','YYYY-MM-DD');  -- allowed, though it shouldn't be
 
+-- to_char's TZ format code produces zone abbrev if known
+SELECT to_char('2012-12-12 12:00'::timestamptz, 'YYYY-MM-DD HH:MI:SS TZ');
+SELECT to_char('2012-12-12 12:00'::timestamptz, 'YYYY-MM-DD HH:MI:SS tz');
+
 --
 -- Check behavior with SQL-style fixed-GMT-offset time zone (cf bug #8572)
 --
@@ -566,5 +681,9 @@ SELECT '2012-12-12 12:00 America/New_York'::timestamptz;
 SELECT to_char('2012-12-12 12:00'::timestamptz, 'YYYY-MM-DD HH:MI:SS TZ');
 SELECT to_char('2012-12-12 12:00'::timestamptz, 'YYYY-MM-DD SSSS');
 SELECT to_char('2012-12-12 12:00'::timestamptz, 'YYYY-MM-DD SSSSS');
+
+SET TIME ZONE '+2';
+
+SELECT to_char('2012-12-12 12:00'::timestamptz, 'YYYY-MM-DD HH:MI:SS TZ');
 
 RESET TIME ZONE;

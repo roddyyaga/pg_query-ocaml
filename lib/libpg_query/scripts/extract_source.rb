@@ -102,8 +102,12 @@ class Runner
       @basepath + 'src/port/win32error.c', # Win32 only
       @basepath + 'src/port/win32env.c', # Win32 only
       @basepath + 'src/port/win32security.c', # Win32 only
-      @basepath + 'src/port/gettimeofday.c', # Win32 only
-      @basepath + 'src/port/strlcpy.c', # Not needed and conflicts with available function
+      @basepath + 'src/port/win32gettimeofday.c', # Win32 only
+      @basepath + 'src/port/win32pwrite.c', # Win32 only
+      @basepath + 'src/port/win32pread.c', # Win32 only
+      @basepath + 'src/port/win32link.c', # Win32 only
+      @basepath + 'src/port/win32getrusage.c', # Win32 only
+      @basepath + 'src/port/strnlen.c', # Not needed and conflicts with available function
       @basepath + 'src/port/strlcat.c', # Not needed and conflicts with available function
       @basepath + 'src/port/unsetenv.c', # Not needed and conflicts with available function
       @basepath + 'src/port/getaddrinfo.c', # Not needed and conflicts with available function
@@ -116,11 +120,15 @@ class Runner
       @basepath + 'src/backend/libpq/be-gssapi-common.c', # Requires GSSAPI (which we don't want to require)
       @basepath + 'src/backend/libpq/be-secure-gssapi.c', # Requires GSSAPI (which we don't want to require)
       @basepath + 'src/common/protocol_openssl.c', # Requires OpenSSL (which we don't want to require)
+      @basepath + 'contrib/pgcrypto/pgp-mpi-openssl.c', # Requires OpenSSL (which we don't want to require)
+      @basepath + 'contrib/pgcrypto/openssl.c', # Requires OpenSSL (which we don't want to require)
     ] -
     Dir.glob(@basepath + 'src/backend/port/dynloader/*.c') -
     Dir.glob(@basepath + 'src/backend/port/win32/*.c') -
     Dir.glob(@basepath + 'src/backend/port/win32_*.c') -
-    Dir.glob(@basepath + 'src/backend/snowball/**/*.c')
+    Dir.glob(@basepath + 'src/backend/snowball/**/*.c') -
+    Dir.glob(@basepath + 'src/backend/nodes/*.switch.c') -
+    Dir.glob(@basepath + 'src/backend/nodes/*.funcs.c')
 
     #files = [@basepath + 'src/backend/parser/keywords.c']
 
@@ -212,15 +220,33 @@ class Runner
 
   def analyze_file(file)
     index = FFI::Clang::Index.new(true, true)
-    translation_unit = index.parse_translation_unit(file, [
+    flags = [
       '-I', @basepath + 'src/include',
       '-I', '/usr/local/opt/openssl/include',
       '-I', `xcrun --sdk macosx --show-sdk-path`.strip + '/usr/include',
       '-DDLSUFFIX=".bundle"',
-      '-msse4.2',
       '-g',
-      '-DUSE_ASSERT_CHECKING'
-    ])
+      '-ferror-limit=0',
+      '-DUSE_ASSERT_CHECKING',
+      # EXEC_BACKEND is used on Windows, and can always be safely set during code analysis
+      '-DEXEC_BACKEND',
+    ]
+
+    # For certain files, use WIN32 define - we can't always do this since it pulls unnecessary code in other cases
+    if file == @basepath + 'src/backend/utils/error/elog.c' || file == @basepath + 'src/backend/utils/mb/mbutils.c'
+      flags << '-DWIN32'
+      flags << '-D__CYGWIN__' # Avoid pulling in win32_port.h (which includes a bunch of system headers we don't actually have)
+    end
+
+    # To override built-ins, we must avoid pulling in any system headers, so pretend we already defined c.h
+    if file == @basepath + 'src/port/strlcpy.c'
+      flags << '-DC_H'
+      flags << '-DHAVE_DECL_STRLCPY=0'
+      flags << '-Dsize_t=unsigned'
+    end
+
+    translation_unit = index.parse_translation_unit(file, flags)
+
     cursor = translation_unit.cursor
 
     func_cursor = nil
@@ -253,8 +279,8 @@ class Runner
             end_offset += 1 if cursor.kind == :cursor_variable # The ";" isn't counted correctly by clang
 
             if cursor.kind == :cursor_variable && (cursor.linkage == :external || cursor.linkage == :internal) &&
-              !cursor.type.const_qualified? && !cursor.type.array_element_type.const_qualified? &&
-              cursor.type.pointee.kind != :type_function_proto
+              !cursor.type.const_qualified? && !(cursor.type.is_a?(FFI::Clang::Types::Array) && cursor.type.element_type.const_qualified?) &&
+              !(cursor.type.is_a?(FFI::Clang::Types::Pointer) && cursor.type.pointee.kind == :type_function_proto)
               analysis.external_variables << cursor.spelling
             end
 
@@ -362,7 +388,7 @@ class Runner
   end
 
   def special_include_file?(filename)
-    filename[/\/(reg(c|e)_[\w_]+|guc-file|qsort_tuple|repl_scanner|levenshtein|bootscanner|like_match)\.c$/] || filename[/\/[\w_]+_impl.h$/]
+    filename[/\/(reg(c|e)_[\w_]+|guc-file|qsort_tuple|repl_scanner|levenshtein|bootscanner|like_match)\.c$/] || filename[/\/[\w_]+\.funcs.c$/] || filename[/\/[\w_]+_impl.h$/]
   end
 
   def write_out
@@ -413,7 +439,7 @@ class Runner
         else
           # In the off chance that part of a macro is before a symbol (e.g. ifdef),
           # but the closing part is inside (e.g. endif) we need to output all macros inside skipped parts
-          str += "\n" + skipped_code.scan(/^(#\s*(?:include|define|undef|if|ifdef|ifndef|else|endif))((?:[^\n]*\\\s*\n)*)([^\n]*)$/m).map { |m| m.compact.join }.join("\n")
+          str += "\n" + skipped_code.scan(/^(#\s*(?:define|undef|if|ifdef|ifndef|else|endif))((?:[^\n]*\\\s*\n)*)([^\n]*)$/m).map { |m| m.compact.join }.join("\n")
         end
 
         next_start_pos = pos[1]
@@ -426,20 +452,22 @@ class Runner
       end
       all_thread_local_variables += file_thread_local_variables
 
-      if special_include_file?(filename)
-        out_name = File.basename(filename)
-      else
+      unless special_include_file?(filename)
         out_name = filename.gsub(%r{^#{@basepath}}, '').gsub('/', '_')
+        File.write(@out_path + out_name, str)
       end
-
-      File.write(@out_path + out_name, str)
     end
 
     #return
 
-    @include_files_to_output.each do |include_file|
-      next if special_include_file?(include_file)
+    additional_includes = Dir.glob(@basepath + 'src/include/storage/dsm_impl.h') +
+      Dir.glob(@basepath + 'src/include/port/atomics/**/*.h') +
+      Dir.glob(@basepath + 'src/include/port/win32/**/*.h') +
+      Dir.glob(@basepath + 'src/include/port/win32_msvc/**/*.h') +
+      Dir.glob(@basepath + 'src/include/port/win32.h') +
+      Dir.glob(@basepath + 'src/include/port/win32_port.h')
 
+    (@include_files_to_output + additional_includes).each do |include_file|
       if include_file.start_with?(@basepath + 'src/include')
         out_file = @out_path + include_file.gsub(%r{^#{@basepath}src/}, '')
       else
@@ -448,7 +476,7 @@ class Runner
 
       code = File.read(include_file)
       all_thread_local_variables.each do |variable|
-        code.gsub!(/(PGDLLIMPORT|extern)\s+(const|volatile)?\s*(\w+)\s+(\*{0,2})#{variable}(\[\])?;/, "\\1 __thread \\2 \\3 \\4#{variable}\\5;")
+        code.gsub!(/(extern\s+)(PGDLLIMPORT\s+)?(const\s+)?(volatile\s+)?(\w+)\s+(\*{0,2})#{variable}(\[\])?;/, "\\1\\2__thread \\3\\4\\5 \\6#{variable}\\7;")
       end
 
       FileUtils.mkdir_p File.dirname(out_file)
@@ -471,6 +499,28 @@ runner.blocklist('SPI_freeplan')
 runner.blocklist('get_ps_display')
 runner.blocklist('pq_beginmessage')
 
+# We have to mock this as it calls `hash_search`, which eventually makes
+# calls down to `pgstat_report_wait_start` and `pgstat_report_wait_end`.
+# These functions depend on the existence of a global variable
+# `my_wait_event_info`.
+#
+# The problem here is we can't reasonably compile the source file
+# `backend/utils/activity/wait_event.c` which provides this symbol, as it
+# initializes the value by-default to a reference to another global.
+# Normally this is fine, but we transform both of these globals so that they
+# are thread local via `__thread`, and it is not valid to initialize one thread
+# local with the address of another.
+#
+# Instead of tackling this directly, we just return `NULL` in the mock below,
+# observing that we do not need to support the registration of custom nodes.
+runner.mock('GetExtensibleNodeMethods', %(
+const ExtensibleNodeMethods *
+GetExtensibleNodeMethods(const char *extnodename, bool missing_ok)
+{
+	return NULL;
+}
+))
+
 # Mocks REQUIRED for basic operations (error handling, memory management)
 runner.mock('ProcessInterrupts', 'void ProcessInterrupts(void) {}') # Required by errfinish
 runner.mock('PqCommMethods', 'const PQcommMethods *PqCommMethods = NULL;') # Required by errfinish
@@ -481,9 +531,116 @@ runner.mock('send_message_to_frontend', 'static void send_message_to_frontend(Er
 # Mocks REQUIRED for PL/pgSQL parsing
 runner.mock('format_type_be', 'char * format_type_be(Oid type_oid) { return pstrdup("-"); }')
 runner.mock('build_row_from_class', 'static PLpgSQL_row *build_row_from_class(Oid classOid) { return NULL; }')
-runner.mock('plpgsql_build_datatype', 'PLpgSQL_type * plpgsql_build_datatype(Oid typeOid, int32 typmod, Oid collation, TypeName *origtypname) { PLpgSQL_type *typ; typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type)); typ->typname = pstrdup("UNKNOWN"); typ->ttype = PLPGSQL_TTYPE_SCALAR; return typ; }')
-runner.mock('parse_datatype', 'static PLpgSQL_type * parse_datatype(const char *string, int location) { PLpgSQL_type *typ; typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type)); typ->typname = pstrdup(string); typ->ttype = strcmp(string, "RECORD") == 0 ? PLPGSQL_TTYPE_REC : PLPGSQL_TTYPE_SCALAR; return typ; }')
-runner.mock('get_collation_oid', 'Oid get_collation_oid(List *name, bool missing_ok) { return -1; }')
+runner.mock('plpgsql_build_datatype', %(
+PLpgSQL_type * plpgsql_build_datatype(Oid typeOid, int32 typmod, Oid collation, TypeName *origtypname)
+{
+	PLpgSQL_type *typ;
+	char *ident = NULL, *ns = NULL;
+	typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type));
+
+	typ->ttype = PLPGSQL_TTYPE_SCALAR;
+	typ->atttypmod = typmod;
+	typ->collation = collation;
+
+	if (origtypname) {
+		typ->typoid = origtypname->typeOid;
+
+		if (list_length(origtypname->names) == 1) {
+			ident = linitial_node(String, origtypname->names)->sval;
+		} else if (list_length(origtypname->names) == 2) {
+			ns = linitial_node(String, origtypname->names)->sval;
+			ident = lsecond_node(String, origtypname->names)->sval;
+			if (strcmp(ns, "pg_catalog") != 0)
+				typ->ttype = PLPGSQL_TTYPE_REC;
+		}
+	} else {
+		typ->typoid = typeOid;
+		ns = "pg_catalog";
+		switch(typeOid)
+		{
+			case BOOLOID:
+				ident = "boolean";
+				break;
+			case INT4OID:
+				ident = "integer";
+				break;
+			case TEXTOID:
+				ident = "text";
+				break;
+			case REFCURSOROID:
+				ident = "refcursor";
+				break;
+		}
+	}
+	if (ident) {
+		typ->typname = quote_qualified_identifier(ns, ident);
+	}
+	return typ;
+}
+))
+runner.mock('parse_datatype', %(
+#include "catalog/pg_collation_d.h"
+static PLpgSQL_type * parse_datatype(const char *string, int location) {
+	PLpgSQL_type *typ;
+
+	/* Ignore trailing spaces */
+	size_t len = strlen(string);
+	while (len > 0 && scanner_isspace(string[len - 1])) --len;
+
+	typ = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type));
+	typ->typname = pstrdup(string);
+	typ->ttype = pg_strncasecmp(string, "RECORD", len) == 0 ? PLPGSQL_TTYPE_REC : PLPGSQL_TTYPE_SCALAR;
+	if (pg_strncasecmp(string, "REFCURSOR", len) == 0 || pg_strncasecmp(string, "CURSOR", len) == 0)
+	{
+		typ->typoid = REFCURSOROID;
+	}
+	else if (pg_strncasecmp(string, "TEXT", len) == 0)
+	{
+		typ->typoid = TEXTOID;
+		typ->collation = DEFAULT_COLLATION_OID;
+	}
+	return typ;
+}
+))
+runner.mock('plpgsql_build_datatype_arrayof', %(
+PLpgSQL_type * plpgsql_build_datatype_arrayof(PLpgSQL_type *dtype)
+{
+	if (dtype->typisarray)
+		return dtype;
+
+	PLpgSQL_type *array_type;
+	array_type = (PLpgSQL_type *) palloc0(sizeof(PLpgSQL_type));
+
+	array_type->ttype = PLPGSQL_TTYPE_REC;
+	array_type->atttypmod = dtype->atttypmod;
+	array_type->collation = dtype->collation;
+
+	array_type->typisarray = true;
+
+	switch(dtype->typoid)
+	{
+		case BOOLOID:
+			array_type->typoid = BOOLARRAYOID;
+			array_type->typname = pstrdup("boolean[]");
+			break;
+		case INT4OID:
+			array_type->typoid = INT4ARRAYOID;
+			array_type->typname = pstrdup("integer[]");
+			break;
+		case TEXTOID:
+			array_type->typoid = TEXTARRAYOID;
+			array_type->typname = pstrdup("text[]");
+			break;
+		default:
+			array_type->typname = pstrdup("UNKNOWN");
+			break;
+	}
+	array_type->typoid = dtype->typoid;
+
+	return array_type;
+}
+))
+runner.mock('get_collation_oid', 'Oid get_collation_oid(List *name, bool missing_ok) { return DEFAULT_COLLATION_OID; }')
 runner.mock('plpgsql_parse_wordtype', 'PLpgSQL_type * plpgsql_parse_wordtype(char *ident) { return NULL; }')
 runner.mock('plpgsql_parse_wordrowtype', 'PLpgSQL_type * plpgsql_parse_wordrowtype(char *ident) { return NULL; }')
 runner.mock('plpgsql_parse_cwordtype', 'PLpgSQL_type * plpgsql_parse_cwordtype(List *idents) { return NULL; }')
@@ -516,6 +673,20 @@ make_return_stmt(int location)
 }
 )) # We're always working with fn_rettype = VOIDOID, due to our use of plpgsql_compile_inline
 
+# Mocks REQUIRED for Windows support
+runner.mock('write_stderr', %(
+void
+write_stderr(const char *fmt,...)
+{
+	va_list	ap;
+	va_start(ap, fmt);
+	vfprintf(stderr, fmt, ap);
+	fflush(stderr);
+	va_end(ap);
+}
+)) # Avoid pulling in write_console/write_eventlog, and instead always output to stderr (like on POSIX)
+runner.mock('should_output_to_client', 'static inline bool should_output_to_client(int elevel) { return false; }') # Avoid pulling in postmaster.c, which has a bunch of Windows-specific code hidden behind a define
+
 ## ---
 
 # SQL Parsing
@@ -524,6 +695,7 @@ runner.deep_resolve('raw_parser')
 # PL/pgSQL Parsing
 runner.deep_resolve('plpgsql_compile_inline')
 runner.deep_resolve('plpgsql_free_function_memory')
+runner.deep_resolve('quote_qualified_identifier')
 
 # Basic Postgres needed to call parser
 runner.deep_resolve('SetDatabaseEncoding')
@@ -534,6 +706,8 @@ runner.deep_resolve('AllocSetContextCreate')
 runner.deep_resolve('MemoryContextSwitchTo')
 runner.deep_resolve('CurrentMemoryContext')
 runner.deep_resolve('MemoryContextDelete')
+runner.deep_resolve('MemoryContextAllocZero')
+runner.deep_resolve('MemoryContextSizeFailure')
 runner.deep_resolve('AllocSetDeleteFreeList')
 runner.deep_resolve('palloc0')
 
@@ -553,7 +727,8 @@ runner.deep_resolve('pg_toupper')
 
 # Needed for normalize
 runner.deep_resolve('pg_qsort')
-runner.deep_resolve('raw_expression_tree_walker')
+runner.deep_resolve('pg_qsort_strcmp')
+runner.deep_resolve('raw_expression_tree_walker_impl')
 
 # Needed to work with simplehash (in fingerprinting logic)
 runner.deep_resolve('hash_bytes')
@@ -561,6 +736,24 @@ runner.deep_resolve('MemoryContextAllocExtended')
 
 # Other required functions
 runner.deep_resolve('pg_printf')
+runner.deep_resolve('pg_strncasecmp')
+
+# Retain these functions for optional 32-bit support
+# (see BITS_PER_BITMAPWORD checks in bitmapset.c)
+runner.deep_resolve('pg_leftmost_one_pos32')
+runner.deep_resolve('pg_rightmost_one_pos32')
+runner.deep_resolve('pg_popcount32')
+
+# Required for Windows support
+runner.deep_resolve('newNodeMacroHolder')
+runner.deep_resolve('pg_leftmost_one_pos')
+runner.deep_resolve('pg_rightmost_one_pos')
+runner.deep_resolve('pg_number_of_ones')
+runner.deep_resolve('GetMessageEncoding')
+runner.deep_resolve('strlcpy')
+runner.deep_resolve('pg_signal_queue')
+runner.deep_resolve('pg_signal_mask')
+runner.deep_resolve('pgwin32_dispatch_queued_signals')
 
 runner.write_out
 

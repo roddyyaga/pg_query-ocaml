@@ -5,7 +5,7 @@
  *
  * Note: this file must be includable in both frontend and backend contexts.
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/datatype/timestamp.h
@@ -40,6 +40,10 @@ typedef int64 TimestampTz;
 typedef int64 TimeOffset;
 typedef int32 fsec_t;			/* fractional seconds (in microseconds) */
 
+
+/*
+ * Storage format for type interval.
+ */
 typedef struct
 {
 	TimeOffset	time;			/* all time units other than days, months and
@@ -47,6 +51,41 @@ typedef struct
 	int32		day;			/* days, after time for alignment */
 	int32		month;			/* months and years, after time for alignment */
 } Interval;
+
+/*
+ * Data structure representing a broken-down interval.
+ *
+ * For historical reasons, this is modeled on struct pg_tm for timestamps.
+ * Unlike the situation for timestamps, there's no magic interpretation
+ * needed for months or years: they're just zero or not.  Note that fields
+ * can be negative; however, because of the divisions done while converting
+ * from struct Interval, only tm_mday could be INT_MIN.  This is important
+ * because we may need to negate the values in some code paths.
+ */
+struct pg_itm
+{
+	int			tm_usec;
+	int			tm_sec;
+	int			tm_min;
+	int64		tm_hour;		/* needs to be wide */
+	int			tm_mday;
+	int			tm_mon;
+	int			tm_year;
+};
+
+/*
+ * Data structure for decoding intervals.  We could just use struct pg_itm,
+ * but then the requirement for tm_usec to be 64 bits would propagate to
+ * places where it's not really needed.  Also, omitting the fields that
+ * aren't used during decoding seems like a good error-prevention measure.
+ */
+struct pg_itm_in
+{
+	int64		tm_usec;		/* needs to be wide */
+	int			tm_mday;
+	int			tm_mon;
+	int			tm_year;
+};
 
 
 /* Limits on the "precision" option (typmod) for these data types */
@@ -75,6 +114,7 @@ typedef struct
  *	30 days.
  */
 #define DAYS_PER_MONTH	30		/* assumes exactly 30 days per month */
+#define DAYS_PER_WEEK	7
 #define HOURS_PER_DAY	24		/* assume no daylight savings time changes */
 
 /*
@@ -96,7 +136,7 @@ typedef struct
 /*
  * We allow numeric timezone offsets up to 15:59:59 either way from Greenwich.
  * Currently, the record holders for wackiest offsets in actual use are zones
- * Asia/Manila, at -15:56:00 until 1844, and America/Metlakatla, at +15:13:42
+ * Asia/Manila, at -15:56:08 until 1844, and America/Metlakatla, at +15:13:42
  * until 1867.  If we were to reject such values we would fail to dump and
  * restore old timestamptz values with these zone settings.
  */
@@ -104,10 +144,17 @@ typedef struct
 #define TZDISP_LIMIT		((MAX_TZDISP_HOUR + 1) * SECS_PER_HOUR)
 
 /*
- * DT_NOBEGIN represents timestamp -infinity; DT_NOEND represents +infinity
+ * We reserve the minimum and maximum integer values to represent
+ * timestamp (or timestamptz) -infinity and +infinity.
  */
-#define DT_NOBEGIN		PG_INT64_MIN
-#define DT_NOEND		PG_INT64_MAX
+#define TIMESTAMP_MINUS_INFINITY	PG_INT64_MIN
+#define TIMESTAMP_INFINITY	PG_INT64_MAX
+
+/*
+ * Historically these aliases for infinity have been used.
+ */
+#define DT_NOBEGIN		TIMESTAMP_MINUS_INFINITY
+#define DT_NOEND		TIMESTAMP_INFINITY
 
 #define TIMESTAMP_NOBEGIN(j)	\
 	do {(j) = DT_NOBEGIN;} while (0)
@@ -121,6 +168,31 @@ typedef struct
 
 #define TIMESTAMP_NOT_FINITE(j) (TIMESTAMP_IS_NOBEGIN(j) || TIMESTAMP_IS_NOEND(j))
 
+/*
+ * Infinite intervals are represented by setting all fields to the minimum or
+ * maximum integer values.
+ */
+#define INTERVAL_NOBEGIN(i)	\
+	do {	\
+		(i)->time = PG_INT64_MIN;	\
+		(i)->day = PG_INT32_MIN;	\
+		(i)->month = PG_INT32_MIN;	\
+	} while (0)
+
+#define INTERVAL_IS_NOBEGIN(i)	\
+	((i)->month == PG_INT32_MIN && (i)->day == PG_INT32_MIN && (i)->time == PG_INT64_MIN)
+
+#define INTERVAL_NOEND(i)	\
+	do {	\
+		(i)->time = PG_INT64_MAX;	\
+		(i)->day = PG_INT32_MAX;	\
+		(i)->month = PG_INT32_MAX;	\
+	} while (0)
+
+#define INTERVAL_IS_NOEND(i)	\
+	((i)->month == PG_INT32_MAX && (i)->day == PG_INT32_MAX && (i)->time == PG_INT64_MAX)
+
+#define INTERVAL_NOT_FINITE(i) (INTERVAL_IS_NOBEGIN(i) || INTERVAL_IS_NOEND(i))
 
 /*
  * Julian date support.

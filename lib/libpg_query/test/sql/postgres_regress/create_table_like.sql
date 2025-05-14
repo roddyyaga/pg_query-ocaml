@@ -95,8 +95,16 @@ CREATE TABLE test_like_5c (LIKE test_like_4 INCLUDING ALL)
   INHERITS (test_like_5, test_like_5x);
 \d test_like_5c
 
+-- Test updating of column numbers in statistics expressions (bug #18468)
+CREATE TABLE test_like_6 (a int, c text, b text);
+CREATE STATISTICS ext_stat ON (a || b) FROM test_like_6;
+ALTER TABLE test_like_6 DROP COLUMN c;
+CREATE TABLE test_like_6c (LIKE test_like_6 INCLUDING ALL);
+\d+ test_like_6c
+
 DROP TABLE test_like_4, test_like_4a, test_like_4b, test_like_4c, test_like_4d;
 DROP TABLE test_like_5, test_like_5x, test_like_5c;
+DROP TABLE test_like_6, test_like_6c;
 
 CREATE TABLE inhg (x text, LIKE inhx INCLUDING INDEXES, y text); /* copies indexes */
 INSERT INTO inhg VALUES (5, 10);
@@ -124,7 +132,9 @@ CREATE TABLE ctlt1 (a text CHECK (length(a) > 2) PRIMARY KEY, b text);
 CREATE INDEX ctlt1_b_key ON ctlt1 (b);
 CREATE INDEX ctlt1_fnidx ON ctlt1 ((a || b));
 CREATE STATISTICS ctlt1_a_b_stat ON a,b FROM ctlt1;
+CREATE STATISTICS ctlt1_expr_stat ON (a || b) FROM ctlt1;
 COMMENT ON STATISTICS ctlt1_a_b_stat IS 'ab stats';
+COMMENT ON STATISTICS ctlt1_expr_stat IS 'ab expr stats';
 COMMENT ON COLUMN ctlt1.a IS 'A';
 COMMENT ON COLUMN ctlt1.b IS 'B';
 COMMENT ON CONSTRAINT ctlt1_a_check ON ctlt1 IS 't1_a_check';

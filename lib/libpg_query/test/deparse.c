@@ -4,28 +4,29 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <fcntl.h>
 
 #include "deparse_tests.c"
 
-// Removes the location values from the JSON parse tree string, replacing them with nothing
-// (we don't use any special replacement value to avoid increasing the string size)
-void remove_node_locations(char *parse_tree_json)
+void remove_numeric_key(char *parse_tree_json, char* key)
 {
 	char *tokstart;
 	char *p;
 	size_t remaining_len;
 
+	char search[100];
+
+	sprintf(search, "\"%s\":", key);
+
 	p = parse_tree_json;
-	while ((p = strstr(p, "\"location\":")) != NULL)
+	while ((p = strstr(p, search)) != NULL)
 	{
 		tokstart = p;
 		if (*(tokstart - 1) == ',')
 			tokstart--;
-		p += strlen("\"location\":");
+		p += strlen(search);
 		if (*p == '-')
 			p++;
 		while (*p >= '0' && *p <= '9')
@@ -37,14 +38,23 @@ void remove_node_locations(char *parse_tree_json)
 	}
 }
 
+// Removes the location values from the JSON parse tree string, replacing them with nothing
+// (we don't use any special replacement value to avoid increasing the string size)
+void remove_node_locations(char *parse_tree_json)
+{
+	remove_numeric_key(parse_tree_json, "location");
+	remove_numeric_key(parse_tree_json, "name_location");
+}
+
 int run_test(const char *query, bool compare_query_text) {
 	PgQueryProtobufParseResult parse_result = pg_query_parse_protobuf(query);
-
 	if (parse_result.error) {
-		pg_query_free_protobuf_parse_result(parse_result);
-		if (!compare_query_text) // Silently fail for regression tests which can contain intentional syntax errors
+		if (!compare_query_text) { // Silently fail for regression tests which can contain intentional syntax errors
+			pg_query_free_protobuf_parse_result(parse_result);
 			return EXIT_SUCCESS;
+		}
 		printf("\nERROR for \"%s\"\n  %s\n", query, parse_result.error->message);
+		pg_query_free_protobuf_parse_result(parse_result);
 		return EXIT_FAILURE;
 	}
 
@@ -119,11 +129,14 @@ int run_tests_from_file(const char * filename) {
 		return EXIT_FAILURE;
 	}
 	fstat(fd, &sample_stat);
-	sample_buffer = mmap(0, sample_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+
+	sample_buffer = malloc(sample_stat.st_size + 1);
+	read(fd, sample_buffer, sample_stat.st_size);
+	sample_buffer[sample_stat.st_size] = 0;
 
 	if (sample_buffer == (void *) -1)
 	{
-		printf("Could not mmap samples file\n");
+		printf("Could not read samples file\n");
 		close(fd);
 		return EXIT_FAILURE;
 	}
@@ -142,7 +155,7 @@ int run_tests_from_file(const char * filename) {
 	{
 		printf("\nERROR splitting file \"%s\"\n  error: %s\n", filename, split_result.error->message);
 		pg_query_free_split_result(split_result);
-		munmap(sample_buffer, sample_stat.st_size);
+		free(sample_buffer);
 		close(fd);
 		return EXIT_FAILURE;
 	}
@@ -151,8 +164,13 @@ int run_tests_from_file(const char * filename) {
 
 	for (int i = 0; i < split_result.n_stmts; ++i)
 	{
-		char *query = strndup(sample_buffer_p + split_result.stmts[i]->stmt_location, split_result.stmts[i]->stmt_len);
-		int test_ret_code = run_test(query, false);
+		int test_ret_code;
+		char *query = malloc(split_result.stmts[i]->stmt_len + 1);
+
+		memcpy(query, sample_buffer_p + split_result.stmts[i]->stmt_location, split_result.stmts[i]->stmt_len);
+		query[split_result.stmts[i]->stmt_len] = 0;
+
+		test_ret_code = run_test(query, false);
 		if (test_ret_code != EXIT_SUCCESS)
 			ret_code = test_ret_code;
 
@@ -161,7 +179,7 @@ int run_tests_from_file(const char * filename) {
 
 	pg_query_free_split_result(split_result);
 
-	munmap(sample_buffer, sample_stat.st_size);
+	free(sample_buffer);
 	close(fd);
 
 	return ret_code;
@@ -181,6 +199,8 @@ const char* regressFilenames[] = {
 	"boolean.sql",
 	"box.sql",
 	"brin.sql",
+	"brin_bloom.sql",
+	"brin_multi.sql",
 	"btree_index.sql",
 	"case.sql",
 	"char.sql",
@@ -189,25 +209,34 @@ const char* regressFilenames[] = {
 	"collate.icu.utf8.sql",
 	"collate.linux.utf8.sql",
 	"collate.sql",
+	"collate.utf8.sql",
+	"collate.windows.win1252.sql",
 	"combocid.sql",
 	"comments.sql",
+	"compression.sql",
+	"constraints.sql",
 	"conversion.sql",
+	"copy.sql",
 	"copy2.sql",
 	"copydml.sql",
 	"copyselect.sql",
 	"create_aggregate.sql",
 	"create_am.sql",
 	"create_cast.sql",
-	"create_function_3.sql",
-	"create_index_spgist.sql",
+	"create_function_c.sql",
+	"create_function_sql.sql",
 	"create_index.sql",
+	"create_index_spgist.sql",
 	"create_misc.sql",
 	"create_operator.sql",
 	"create_procedure.sql",
-	"create_table_like.sql",
+	"create_role.sql",
+	"create_schema.sql",
 	"create_table.sql",
+	"create_table_like.sql",
 	"create_type.sql",
 	"create_view.sql",
+	"database.sql",
 	"date.sql",
 	"dbsize.sql",
 	"delete.sql",
@@ -219,6 +248,7 @@ const char* regressFilenames[] = {
 	"equivclass.sql",
 	"errors.sql",
 	"event_trigger.sql",
+	"event_trigger_login.sql",
 	"explain.sql",
 	"expressions.sql",
 	"fast_default.sql",
@@ -237,36 +267,31 @@ const char* regressFilenames[] = {
 	"hash_index.sql",
 	"hash_part.sql",
 	"horology.sql",
-	"hs_primary_extremes.sql",
-	"hs_primary_setup.sql",
-	"hs_standby_allowed.sql",
-	"hs_standby_check.sql",
-	"hs_standby_disallowed.sql",
-	"hs_standby_functions.sql",
 	"identity.sql",
 	"incremental_sort.sql",
-	"index_including_gist.sql",
 	"index_including.sql",
+	"index_including_gist.sql",
 	"indexing.sql",
 	"indirect_toast.sql",
 	"inet.sql",
 	"infinite_recurse.sql",
 	"inherit.sql",
 	"init_privs.sql",
-	"insert_conflict.sql",
 	"insert.sql",
+	"insert_conflict.sql",
 	"int2.sql",
 	"int4.sql",
 	"int8.sql",
 	"interval.sql",
-	"join_hash.sql",
 	"join.sql",
-	"json_encoding.sql",
+	"join_hash.sql",
 	"json.sql",
-	"jsonb_jsonpath.sql",
+	"json_encoding.sql",
 	"jsonb.sql",
-	"jsonpath_encoding.sql",
+	"jsonb_jsonpath.sql",
 	"jsonpath.sql",
+	"jsonpath_encoding.sql",
+	"largeobject.sql",
 	"limit.sql",
 	"line.sql",
 	"lock.sql",
@@ -274,14 +299,19 @@ const char* regressFilenames[] = {
 	"macaddr.sql",
 	"macaddr8.sql",
 	"matview.sql",
+	"md5.sql",
+	"memoize.sql",
+	"merge.sql",
+	"misc.sql",
 	"misc_functions.sql",
 	"misc_sanity.sql",
 	"money.sql",
+	"multirangetypes.sql",
+	"mvcc.sql",
 	"name.sql",
 	"namespace.sql",
-	"numeric_big.sql",
 	"numeric.sql",
-	"numerology.sql",
+	"numeric_big.sql",
 	"object_address.sql",
 	"oid.sql",
 	"oidjoins.sql",
@@ -298,18 +328,18 @@ const char* regressFilenames[] = {
 	"point.sql",
 	"polygon.sql",
 	"polymorphism.sql",
-	"portals_p2.sql",
 	"portals.sql",
+	"portals_p2.sql",
+	"predicate.sql",
 	"prepare.sql",
 	"prepared_xacts.sql",
 	"privileges.sql",
-	"psql_crosstab.sql",
 	"psql.sql",
+	"psql_crosstab.sql",
 	"publication.sql",
 	"random.sql",
 	"rangefuncs.sql",
 	"rangetypes.sql",
-	"regex.linux.utf8.sql",
 	"regex.sql",
 	"regproc.sql",
 	"reindex_catalog.sql",
@@ -322,26 +352,32 @@ const char* regressFilenames[] = {
 	"rules.sql",
 	"sanity_check.sql",
 	"security_label.sql",
-	"select_distinct_on.sql",
+	"select.sql",
 	"select_distinct.sql",
+	"select_distinct_on.sql",
 	"select_having.sql",
 	"select_implicit.sql",
 	"select_into.sql",
 	"select_parallel.sql",
 	"select_views.sql",
-	"select.sql",
 	"sequence.sql",
 	"spgist.sql",
-	"stats_ext.sql",
+	"sqljson.sql",
+	"sqljson_jsontable.sql",
+	"sqljson_queryfuncs.sql",
 	"stats.sql",
+	"stats_ext.sql",
 	"strings.sql",
 	"subscription.sql",
 	"subselect.sql",
 	"sysviews.sql",
 	"tablesample.sql",
+	"tablespace.sql",
 	"temp.sql",
+	"test_setup.sql",
 	"text.sql",
 	"tid.sql",
+	"tidrangescan.sql",
 	"tidscan.sql",
 	"time.sql",
 	"timestamp.sql",
@@ -364,15 +400,34 @@ const char* regressFilenames[] = {
 	"update.sql",
 	"uuid.sql",
 	"vacuum.sql",
+	"vacuum_parallel.sql",
 	"varchar.sql",
 	"window.sql",
 	"with.sql",
 	"write_parallel.sql",
 	"xid.sql",
 	"xml.sql",
-	"xmlmap.sql"
+	"xmlmap.sql",
 };
-size_t regressFilenameCount = 203;
+size_t regressFilenameCount = sizeof(regressFilenames) / sizeof(regressFilenames[0]);
+
+const char* plpgsqlRegressFilenames[] =
+{
+	"plpgsql_array.sql",
+	"plpgsql_cache.sql",
+	"plpgsql_call.sql",
+	"plpgsql_control.sql",
+	"plpgsql_copy.sql",
+	"plpgsql_domain.sql",
+	"plpgsql_misc.sql",
+	"plpgsql_record.sql",
+	"plpgsql_simple.sql",
+	"plpgsql_transaction.sql",
+	"plpgsql_trap.sql",
+	"plpgsql_trigger.sql",
+	"plpgsql_varprops.sql"
+};
+size_t plpgsqlRegressFilenameCount = sizeof(plpgsqlRegressFilenames) / sizeof(plpgsqlRegressFilenames[0]);
 
 int main() {
 	size_t i;
@@ -390,6 +445,17 @@ int main() {
 		char *filename = malloc(sizeof(char) * strlen("test/sql/postgres_regress/") + strlen(regressFilenames[i]) + 1);
 		strcpy(filename, "test/sql/postgres_regress/");
 		strcat(filename, regressFilenames[i]);
+		test_ret_code = run_tests_from_file(filename);
+		free(filename);
+		if (test_ret_code != EXIT_SUCCESS)
+			ret_code = test_ret_code;
+	}
+
+	for (i = 0; i < plpgsqlRegressFilenameCount; i += 1) {
+		printf("\n%s\n", plpgsqlRegressFilenames[i]);
+		char *filename = malloc(sizeof(char) * strlen("test/sql/postgres_regress/") + strlen(plpgsqlRegressFilenames[i]) + 1);
+		strcpy(filename, "test/sql/plpgsql_regress/");
+		strcat(filename, plpgsqlRegressFilenames[i]);
 		test_ret_code = run_tests_from_file(filename);
 		free(filename);
 		if (test_ret_code != EXIT_SUCCESS)

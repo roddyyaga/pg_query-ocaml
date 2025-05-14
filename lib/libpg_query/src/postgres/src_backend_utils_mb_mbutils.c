@@ -5,7 +5,7 @@
  * - cliplen
  * - DatabaseEncoding
  * - pg_verifymbstr
- * - pg_verify_mbstr_len
+ * - pg_verify_mbstr
  * - report_invalid_encoding
  * - GetDatabaseEncoding
  * - pg_get_client_encoding
@@ -17,6 +17,8 @@
  * - pg_mbstrlen_with_len
  * - pg_mblen
  * - SetDatabaseEncoding
+ * - GetMessageEncoding
+ * - MessageEncoding
  *--------------------------------------------------------------------
  */
 
@@ -45,7 +47,7 @@
  * the result is validly encoded according to the destination encoding.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -59,9 +61,9 @@
 #include "access/xact.h"
 #include "catalog/namespace.h"
 #include "mb/pg_wchar.h"
-#include "utils/builtins.h"
+#include "utils/fmgrprotos.h"
 #include "utils/memutils.h"
-#include "utils/syscache.h"
+#include "varatt.h"
 
 /*
  * We maintain a simple linked list caching the fmgr lookup info for the
@@ -104,6 +106,7 @@ static __thread const pg_enc2name *ClientEncoding = &pg_enc2name_tbl[PG_SQL_ASCI
 
 static __thread const pg_enc2name *DatabaseEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
 
+static __thread const pg_enc2name *MessageEncoding = &pg_enc2name_tbl[PG_SQL_ASCII];
 
 
 /*
@@ -165,6 +168,37 @@ pg_get_client_encoding(void)
  * Convert src string to another encoding (general case).
  *
  * See the notes about string conversion functions at the top of this file.
+ */
+
+
+/*
+ * Convert src string to another encoding.
+ *
+ * This function has a different API than the other conversion functions.
+ * The caller should've looked up the conversion function using
+ * FindDefaultConversionProc().  Unlike the other functions, the converted
+ * result is not palloc'd.  It is written to the caller-supplied buffer
+ * instead.
+ *
+ * src_encoding   - encoding to convert from
+ * dest_encoding  - encoding to convert to
+ * src, srclen    - input buffer and its length in bytes
+ * dest, destlen  - destination buffer and its size in bytes
+ *
+ * The output is null-terminated.
+ *
+ * If destlen < srclen * MAX_CONVERSION_INPUT_LENGTH + 1, the converted output
+ * wouldn't necessarily fit in the output buffer, and the function will not
+ * convert the whole input.
+ *
+ * TODO: The conversion function interface is not great.  Firstly, it
+ * would be nice to pass through the destination buffer size to the
+ * conversion function, so that if you pass a shorter destination buffer, it
+ * could still continue to fill up the whole buffer.  Currently, we have to
+ * assume worst case expansion and stop the conversion short, even if there
+ * is in fact space left in the destination buffer.  Secondly, it would be
+ * nice to return the number of bytes written to the caller, to avoid a call
+ * to strlen().
  */
 
 
@@ -305,13 +339,22 @@ pg_unicode_to_server(pg_wchar c, unsigned char *s)
 	c_as_utf8[c_as_utf8_len] = '\0';
 
 	/* Convert, or throw error if we can't */
-	FunctionCall5(Utf8ToServerConvProc,
+	FunctionCall6(Utf8ToServerConvProc,
 				  Int32GetDatum(PG_UTF8),
 				  Int32GetDatum(server_encoding),
-				  CStringGetDatum(c_as_utf8),
-				  CStringGetDatum(s),
-				  Int32GetDatum(c_as_utf8_len));
+				  CStringGetDatum((char *) c_as_utf8),
+				  CStringGetDatum((char *) s),
+				  Int32GetDatum(c_as_utf8_len),
+				  BoolGetDatum(false));
 }
+
+/*
+ * Convert a single Unicode code point into a string in the server encoding.
+ *
+ * Same as pg_unicode_to_server(), except that we don't throw errors,
+ * but simply return false on conversion failure.
+ */
+
 
 
 /* convert a multibyte string to a wchar */
@@ -452,24 +495,18 @@ static bool
 raw_pg_bind_textdomain_codeset(const char *domainname, int encoding)
 {
 	bool		elog_ok = (CurrentMemoryContext != NULL);
-	int			i;
 
-	for (i = 0; pg_enc2gettext_tbl[i].name != NULL; i++)
-	{
-		if (pg_enc2gettext_tbl[i].encoding == encoding)
-		{
-			if (bind_textdomain_codeset(domainname,
-										pg_enc2gettext_tbl[i].name) != NULL)
-				return true;
+	if (!PG_VALID_ENCODING(encoding) || pg_enc2gettext_tbl[encoding] == NULL)
+		return false;
 
-			if (elog_ok)
-				elog(LOG, "bind_textdomain_codeset failed");
-			else
-				write_stderr("bind_textdomain_codeset failed");
+	if (bind_textdomain_codeset(domainname,
+								pg_enc2gettext_tbl[encoding]) != NULL)
+		return true;
 
-			break;
-		}
-	}
+	if (elog_ok)
+		elog(LOG, "bind_textdomain_codeset failed");
+	else
+		write_stderr("bind_textdomain_codeset failed");
 
 	return false;
 }
@@ -554,7 +591,11 @@ GetDatabaseEncodingName(void)
  * not attached to a database, and under a database encoding lacking iconv
  * support (MULE_INTERNAL).
  */
-
+int
+GetMessageEncoding(void)
+{
+	return MessageEncoding->encoding;
+}
 
 
 /*
@@ -629,15 +670,29 @@ pg_database_encoding_max_length(void)
 bool
 pg_verifymbstr(const char *mbstr, int len, bool noError)
 {
-	return
-		pg_verify_mbstr_len(GetDatabaseEncoding(), mbstr, len, noError) >= 0;
+	return pg_verify_mbstr(GetDatabaseEncoding(), mbstr, len, noError);
 }
 
 /*
  * Verify mbstr to make sure that it is validly encoded in the specified
  * encoding.
  */
+bool
+pg_verify_mbstr(int encoding, const char *mbstr, int len, bool noError)
+{
+	int			oklen;
 
+	Assert(PG_VALID_ENCODING(encoding));
+
+	oklen = pg_wchar_table[encoding].mbverifystr((const unsigned char *) mbstr, len);
+	if (oklen != len)
+	{
+		if (noError)
+			return false;
+		report_invalid_encoding(encoding, mbstr + oklen, len - oklen);
+	}
+	return true;
+}
 
 /*
  * Verify mbstr to make sure that it is validly encoded in the specified
@@ -649,68 +704,11 @@ pg_verifymbstr(const char *mbstr, int len, bool noError)
  * If OK, return length of string in the encoding.
  * If a problem is found, return -1 when noError is
  * true; when noError is false, ereport() a descriptive message.
+ *
+ * Note: We cannot use the faster encoding-specific mbverifystr() function
+ * here, because we need to count the number of characters in the string.
  */
-int
-pg_verify_mbstr_len(int encoding, const char *mbstr, int len, bool noError)
-{
-	mbverifier	mbverify;
-	int			mb_len;
 
-	Assert(PG_VALID_ENCODING(encoding));
-
-	/*
-	 * In single-byte encodings, we need only reject nulls (\0).
-	 */
-	if (pg_encoding_max_length(encoding) <= 1)
-	{
-		const char *nullpos = memchr(mbstr, 0, len);
-
-		if (nullpos == NULL)
-			return len;
-		if (noError)
-			return -1;
-		report_invalid_encoding(encoding, nullpos, 1);
-	}
-
-	/* fetch function pointer just once */
-	mbverify = pg_wchar_table[encoding].mbverify;
-
-	mb_len = 0;
-
-	while (len > 0)
-	{
-		int			l;
-
-		/* fast path for ASCII-subset characters */
-		if (!IS_HIGHBIT_SET(*mbstr))
-		{
-			if (*mbstr != '\0')
-			{
-				mb_len++;
-				mbstr++;
-				len--;
-				continue;
-			}
-			if (noError)
-				return -1;
-			report_invalid_encoding(encoding, mbstr, len);
-		}
-
-		l = (*mbverify) ((const unsigned char *) mbstr, len);
-
-		if (l < 0)
-		{
-			if (noError)
-				return -1;
-			report_invalid_encoding(encoding, mbstr, len);
-		}
-
-		mbstr += l;
-		len -= l;
-		mb_len++;
-	}
-	return mb_len;
-}
 
 /*
  * check_encoding_conversion_args: check arguments of a conversion function
@@ -772,68 +770,6 @@ report_invalid_encoding(int encoding, const char *mbstr, int len)
  * null. Returns NULL iff failed. Before MessageEncoding initialization, "str"
  * should be ASCII-only; this will function as though MessageEncoding is UTF8.
  */
-WCHAR *
-pgwin32_message_to_UTF16(const char *str, int len, int *utf16len)
-{
-	int			msgenc = GetMessageEncoding();
-	WCHAR	   *utf16;
-	int			dstlen;
-	UINT		codepage;
 
-	if (msgenc == PG_SQL_ASCII)
-		/* No conversion is possible, and SQL_ASCII is never utf16. */
-		return NULL;
-
-	codepage = pg_enc2name_tbl[msgenc].codepage;
-
-	/*
-	 * Use MultiByteToWideChar directly if there is a corresponding codepage,
-	 * or double conversion through UTF8 if not.  Double conversion is needed,
-	 * for example, in an ENCODING=LATIN8, LC_CTYPE=C database.
-	 */
-	if (codepage != 0)
-	{
-		utf16 = (WCHAR *) palloc(sizeof(WCHAR) * (len + 1));
-		dstlen = MultiByteToWideChar(codepage, 0, str, len, utf16, len);
-		utf16[dstlen] = (WCHAR) 0;
-	}
-	else
-	{
-		char	   *utf8;
-
-		/*
-		 * XXX pg_do_encoding_conversion() requires a transaction.  In the
-		 * absence of one, hope for the input to be valid UTF8.
-		 */
-		if (IsTransactionState())
-		{
-			utf8 = (char *) pg_do_encoding_conversion((unsigned char *) str,
-													  len,
-													  msgenc,
-													  PG_UTF8);
-			if (utf8 != str)
-				len = strlen(utf8);
-		}
-		else
-			utf8 = (char *) str;
-
-		utf16 = (WCHAR *) palloc(sizeof(WCHAR) * (len + 1));
-		dstlen = MultiByteToWideChar(CP_UTF8, 0, utf8, len, utf16, len);
-		utf16[dstlen] = (WCHAR) 0;
-
-		if (utf8 != str)
-			pfree(utf8);
-	}
-
-	if (dstlen == 0 && len > 0)
-	{
-		pfree(utf16);
-		return NULL;			/* error */
-	}
-
-	if (utf16len)
-		*utf16len = dstlen;
-	return utf16;
-}
 
 #endif							/* WIN32 */

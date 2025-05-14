@@ -4,7 +4,6 @@
  * - ExitOnAnyError
  * - InterruptHoldoffCount
  * - QueryCancelHoldoffCount
- * - IsPostmasterEnvironment
  * - InterruptPending
  *--------------------------------------------------------------------
  */
@@ -14,7 +13,7 @@
  * globals.c
  *	  global variable declarations
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -33,7 +32,7 @@
 #include "libpq/libpq-be.h"
 #include "libpq/pqcomm.h"
 #include "miscadmin.h"
-#include "storage/backendid.h"
+#include "storage/procnumber.h"
 
 
 
@@ -45,11 +44,17 @@ __thread volatile sig_atomic_t InterruptPending = false;
 
 
 
+
+
+
+
+
 __thread volatile uint32 InterruptHoldoffCount = 0;
 
 __thread volatile uint32 QueryCancelHoldoffCount = 0;
 
 __thread volatile uint32 CritSectionCount = 0;
+
 
 
 
@@ -88,10 +93,12 @@ __thread volatile uint32 CritSectionCount = 0;
  /* full path to lib directory */
 
 #ifdef EXEC_BACKEND
-char		postgres_exec_path[MAXPGPATH];	/* full path to backend */
+	/* full path to backend */
 
 /* note: currently this is not valid in backend processes */
 #endif
+
+
 
 
 
@@ -120,8 +127,6 @@ char		postgres_exec_path[MAXPGPATH];	/* full path to backend */
  *
  * These are initialized for the bootstrap/standalone case.
  */
-__thread bool		IsPostmasterEnvironment = false;
-
 
 
 
@@ -152,7 +157,10 @@ __thread bool		ExitOnAnyError = false;
 
 
 
-	/* GUC parameters for vacuum */
+/* GUC parameters for vacuum */
+
+
+
 
 
 
@@ -163,6 +171,13 @@ __thread bool		ExitOnAnyError = false;
 
 
 	/* working state for vacuum */
+
+
+/* configurable SLRU buffer sizes */
+
+
+
+
 
 
 

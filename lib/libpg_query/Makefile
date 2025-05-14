@@ -5,12 +5,15 @@ TARGET = pg_query
 ARLIB = lib$(TARGET).a
 PGDIR = $(root_dir)/tmp/postgres
 PGDIRBZ2 = $(root_dir)/tmp/postgres.tar.bz2
+PGDIRZIP = $(root_dir)/tmp/postgres.zip
 
-PG_VERSION = 13.8
+PG_VERSION = 17.4
 PG_VERSION_MAJOR = $(call word-dot,$(PG_VERSION),1)
-PROTOC_VERSION = 3.14.0
+PG_VERSION_NUM = 170004
+PG_BRANCH = REL_17_STABLE
+PROTOC_VERSION = 25.1
 
-VERSION = 2.2.0
+VERSION = 6.1.0
 VERSION_MAJOR = $(call word-dot,$(VERSION),1)
 VERSION_MINOR = $(call word-dot,$(VERSION),2)
 VERSION_PATCH = $(call word-dot,$(VERSION),3)
@@ -30,14 +33,17 @@ else
 endif
 
 SRC_FILES := $(wildcard src/*.c src/postgres/*.c) vendor/protobuf-c/protobuf-c.c vendor/xxhash/xxhash.c protobuf/pg_query.pb-c.c
-NOT_OBJ_FILES := src/pg_query_enum_defs.o src/pg_query_fingerprint_defs.o src/pg_query_fingerprint_conds.o src/pg_query_outfuncs_defs.o src/pg_query_outfuncs_conds.o src/pg_query_readfuncs_defs.o src/pg_query_readfuncs_conds.o src/postgres/guc-file.o src/postgres/scan.o src/pg_query_json_helper.o
-OBJ_FILES := $(filter-out $(NOT_OBJ_FILES), $(SRC_FILES:.c=.o))
+OBJ_FILES := $(SRC_FILES:.c=.o)
 
-override CFLAGS += -g -I. -I./vendor -I./src/postgres/include -Wall -Wno-unused-function -Wno-unused-value -Wno-unused-variable -fno-strict-aliasing -fwrapv -fPIC
+override CFLAGS += -g -I. -I./vendor -I./src/include -I./src/postgres/include -Wall -Wno-unused-function -Wno-unused-value -Wno-unused-variable -fno-strict-aliasing -fwrapv -fPIC
 
-override PG_CONFIGURE_FLAGS += -q --without-readline --without-zlib
+ifeq ($(OS),Windows_NT)
+override CFLAGS += -I./src/postgres/include/port/win32
+endif
 
-override TEST_CFLAGS += -I. -I./vendor -g
+override PG_CONFIGURE_FLAGS += -q --without-readline --without-zlib --without-icu
+
+override TEST_CFLAGS += -g -I. -I./vendor -Wall
 override TEST_LDFLAGS += -pthread
 
 CFLAGS_OPT_LEVEL = -O3
@@ -60,11 +66,10 @@ endif
 
 CLEANLIBS = $(ARLIB)
 CLEANOBJS = $(OBJ_FILES)
-CLEANFILES = $(PGDIRBZ2)
+CLEANFILES = $(PGDIRBZ2) $(PGDIRZIP)
 
 AR ?= ar
 AR := $(AR) rs
-
 INSTALL = install
 LN_S = ln -s
 RM = rm -f
@@ -74,24 +79,24 @@ VALGRIND_MEMCHECK = valgrind --leak-check=full --gen-suppressions=all \
   --suppressions=test/valgrind.supp --time-stamp=yes \
   --error-markers=VALGRINDERROR-BEGIN,VALGRINDERROR-END \
   --log-file=test/valgrind.log --trace-children=yes --show-leak-kinds=all \
-  --error-exitcode=1 --errors-for-leak-kinds=all
+  --error-exitcode=1 --errors-for-leak-kinds=all --num-callers=50
 
 CC ?= cc
 
 # Experimental use of Protobuf C++ library, primarily used to validate JSON output matches Protobuf JSON mapping
 CXX_SRC_FILES := src/pg_query_outfuncs_protobuf_cpp.cc protobuf/pg_query.pb.cc
 ifeq ($(USE_PROTOBUF_CPP),1)
-	override CXXFLAGS += `pkg-config --cflags protobuf` -I. -I./src/postgres/include -DHAVE_PTHREAD -std=c++11 -Wall -Wno-unused-function -Wno-zero-length-array -Wno-c99-extensions -fwrapv -fPIC
+	override CXXFLAGS += `pkg-config --cflags protobuf` -I. -I./src/include -I./src/postgres/include -DHAVE_PTHREAD -std=c++17 -Wall -Wno-unused-function -Wno-zero-length-array -Wno-c99-extensions -fwrapv -fPIC
 	ifeq ($(DEBUG),1)
 		override CXXFLAGS += -O0 -g
 	else
 		override CXXFLAGS += -O3 -g
 	endif
-	override TEST_LDFLAGS += `pkg-config --libs protobuf` -lstdc++
+	override TEST_LDFLAGS += `pkg-config --libs protobuf` -lstdc++ -lm
 
 	# Don't use regular Protobuf-C or JSON implementation (instead implement the same methods using the C++ library)
 	SRC_FILES := $(filter-out src/pg_query_outfuncs_json.c src/pg_query_outfuncs_protobuf.c, $(SRC_FILES))
-	OBJ_FILES := $(filter-out $(NOT_OBJ_FILES), $(SRC_FILES:.c=.o)) $(CXX_SRC_FILES:.cc=.o)
+	OBJ_FILES := $(SRC_FILES:.c=.o) $(CXX_SRC_FILES:.cc=.o)
 else
 	# Make sure we always clean C++ object files
 	CLEANOBJS += $(CXX_SRC_FILES:.cc=.o)
@@ -106,68 +111,77 @@ build_shared: $(SOLIB)
 clean:
 	-@ $(RM) $(CLEANLIBS) $(CLEANOBJS) $(CLEANFILES) $(EXAMPLES) $(TESTS)
 	-@ $(RM) -rf {test,examples}/*.dSYM
-	-@ $(RM) -r $(PGDIR) $(PGDIRBZ2)
+	-@ $(RM) -r $(PGDIR) $(PGDIRBZ2) $(PGDIRZIP)
 
 .PHONY: all clean build build_shared extract_source examples test install
 
 $(PGDIR):
-	curl -o $(PGDIRBZ2) https://ftp.postgresql.org/pub/source/v$(PG_VERSION)/postgresql-$(PG_VERSION).tar.bz2
-	tar -xjf $(PGDIRBZ2)
-	mv $(root_dir)/postgresql-$(PG_VERSION) $(PGDIR)
+#	We temporarily build off REL_17_STABLE to pull in https://git.postgresql.org/gitweb/?p=postgresql.git;a=commit;h=6da2ba1d8a031984eb016fed6741bb2ac945f19d
+#   TODO: Go back to upstream tarball once 17.5 is released
+#	tar -xjf $(PGDIRBZ2)
+#	curl -o $(PGDIRBZ2) https://ftp.postgresql.org/pub/source/v$(PG_VERSION)/postgresql-$(PG_VERSION).tar.bz2
+#	mv $(root_dir)/postgresql-$(PG_VERSION) $(PGDIR)
+	curl -L -o $(PGDIRZIP) https://github.com/postgres/postgres/archive/refs/heads/$(PG_BRANCH).zip
+	unzip $(PGDIRZIP)
+	mv $(root_dir)/postgres-$(PG_BRANCH) $(PGDIR)
 	cd $(PGDIR); patch -p1 < $(root_dir)/patches/01_parser_additional_param_ref_support.patch
-	cd $(PGDIR); patch -p1 < $(root_dir)/patches/02_parser_support_question_mark_as_param_ref.patch
 	cd $(PGDIR); patch -p1 < $(root_dir)/patches/03_lexer_track_yyllocend.patch
 	cd $(PGDIR); patch -p1 < $(root_dir)/patches/04_lexer_comments_as_tokens.patch
 	cd $(PGDIR); patch -p1 < $(root_dir)/patches/05_limit_option_enum_value_default.patch
 	cd $(PGDIR); patch -p1 < $(root_dir)/patches/06_alloc_set_delete_free_list.patch
 	cd $(PGDIR); patch -p1 < $(root_dir)/patches/07_plpgsql_start_finish_datums.patch
 	cd $(PGDIR); patch -p1 < $(root_dir)/patches/08_avoid_zero_length_delimiter_in_regression_tests.patch
-	cd $(PGDIR); patch -p1 < $(root_dir)/patches/09_backport_gram_ref_p_fix.patch
+	cd $(PGDIR); patch -p1 < $(root_dir)/patches/09_allow_param_junk.patch
+	cd $(PGDIR); patch -p1 < $(root_dir)/patches/10_avoid_namespace_hashtab_impl_gen.patch
 	cd $(PGDIR); ./configure $(PG_CONFIGURE_FLAGS)
-	cd $(PGDIR); rm src/pl/plpgsql/src/pl_gram.h
-	cd $(PGDIR); make -C src/pl/plpgsql/src pl_gram.h
+	cd $(PGDIR); make -C src/pl/plpgsql/src pl_gram.h plerrcodes.h pl_reserved_kwlist_d.h pl_unreserved_kwlist_d.h
 	cd $(PGDIR); make -C src/port pg_config_paths.h
 	cd $(PGDIR); make -C src/backend generated-headers
 	cd $(PGDIR); make -C src/backend parser-recursive # Triggers copying of includes to where they belong, as well as generating gram.c/scan.c
+	cd $(PGDIR); make -C src/common kwlist_d.h
+	# Avoid problems with static asserts
+	echo "#undef StaticAssertDecl" >> $(PGDIR)/src/include/c.h
+	echo "#define StaticAssertDecl(condition, errmessage)" >> $(PGDIR)/src/include/c.h
+	# Add pg_config.h overrides
+	cat scripts/pg_config_overrides.h >> $(PGDIR)/src/include/pg_config.h
+	# Only define strlcpy when needed
+	sed -i "" '$(shell echo 's/\#include "c.h"/#include "c.h"\n#if HAVE_DECL_STRLCPY == 0/')' $(PGDIR)/src/port/strlcpy.c
+	echo "#endif // HAVE_DECL_STRLCPY == 0" >> $(PGDIR)/src/port/strlcpy.c
+	# Define symbols needed by elog.c that are commonly defined by win32/signal.c
+	echo "#ifdef WIN32" >> $(PGDIR)/src/backend/utils/error/elog.c
+	echo "volatile int pg_signal_queue;" >> $(PGDIR)/src/backend/utils/error/elog.c
+	echo "int pg_signal_mask;" >> $(PGDIR)/src/backend/utils/error/elog.c
+	echo "void pgwin32_dispatch_queued_signals(void) {}" >> $(PGDIR)/src/backend/utils/error/elog.c
+	echo "#endif" >> $(PGDIR)/src/backend/utils/error/elog.c
 
 extract_source: $(PGDIR)
 	-@ $(RM) -rf ./src/postgres/
 	mkdir ./src/postgres
 	mkdir ./src/postgres/include
 	LIBCLANG=/Library/Developer/CommandLineTools/usr/lib/libclang.dylib ruby ./scripts/extract_source.rb $(PGDIR)/ ./src/postgres/
-	cp $(PGDIR)/src/include/storage/dsm_impl.h ./src/postgres/include/storage
-	cp $(PGDIR)/src/include/port/atomics/arch-x86.h ./src/postgres/include/port/atomics
-	cp $(PGDIR)/src/include/port/atomics/arch-arm.h ./src/postgres/include/port/atomics
-	cp $(PGDIR)/src/include/port/atomics/arch-ppc.h ./src/postgres/include/port/atomics
-	touch ./src/postgres/guc-file.c
-	# This causes compatibility problems on some Linux distros, with "xlocale.h" not being available
-	echo "#undef HAVE_LOCALE_T" >> ./src/postgres/include/pg_config.h
-	echo "#undef LOCALE_T_IN_XLOCALE" >> ./src/postgres/include/pg_config.h
-	echo "#undef WCSTOMBS_L_IN_XLOCALE" >> ./src/postgres/include/pg_config.h
-	# Support 32-bit systems without reconfiguring
-	echo "#undef PG_INT128_TYPE" >> ./src/postgres/include/pg_config.h
-	# Support gcc earlier than 4.6.0 without reconfiguring
-	echo "#undef HAVE__STATIC_ASSERT" >> ./src/postgres/include/pg_config.h
-	# Avoid problems with static asserts
-	echo "#undef StaticAssertDecl" >> ./src/postgres/include/c.h
-	echo "#define StaticAssertDecl(condition, errmessage)" >> ./src/postgres/include/c.h
-	# Avoid dependency on execinfo (requires extra library on musl-libc based systems)
-	echo "#undef HAVE_EXECINFO_H" >> ./src/postgres/include/pg_config.h
-	echo "#undef HAVE_BACKTRACE_SYMBOLS" >> ./src/postgres/include/pg_config.h
-	# Avoid dependency on cpuid.h (only supported on x86 systems)
-	echo "#undef HAVE__GET_CPUID" >> ./src/postgres/include/pg_config.h
-	# Ensure we don't fail on systems that have strchrnul support (FreeBSD)
-	echo "#include <stdlib.h>" >>  $(PGDIR)/src/include/pg_config.h
-	echo "#if defined(__FreeBSD__) || defined(__NetBSD__) || (defined(__GLIBC__) && ((__GLIBC__ == 2 && __GLIBC_MINOR__ >= 38) || __GLIBC__ > 2))" >> $(PGDIR)/src/include/pg_config.h
-	echo "#define HAVE_STRCHRNUL" >> ./src/postgres/include/pg_config.h
-	echo "#endif" >> ./src/postgres/include/pg_config.h
+	# Override OS-specific pg_config_os.h to only load Win32 logic (the primary port logic that matters for libpg_query), if needed
+	echo "#if defined(_WIN32) || defined(_WIN64)" > ./src/postgres/include/pg_config_os.h
+	echo "#include \"port/win32.h\"" >> ./src/postgres/include/pg_config_os.h
+	# Don't mark anything as visible based on how Postgres defines it
+	echo "#undef PGDLLIMPORT" >> ./src/postgres/include/pg_config_os.h
+	echo "#undef PGDLLEXPORT" >> ./src/postgres/include/pg_config_os.h
+	# Avoid getting incorrect sigsetjmp overrides
+	echo "#ifdef __clang__" >> ./src/postgres/include/pg_config_os.h
+	echo "#undef __MINGW64__" >> ./src/postgres/include/pg_config_os.h
+	echo "#endif /* __clang__ */" >> ./src/postgres/include/pg_config_os.h
+	echo "#endif" >> ./src/postgres/include/pg_config_os.h
+	# Adjust version string to ignore differences in build environments
+	sed -i "" '$(shell echo 's/\#define PG_VERSION_STR .*/#define PG_VERSION_STR "PostgreSQL $(PG_VERSION) \(libpg_query\)"/')' ./src/postgres/include/pg_config.h
 	# Copy version information so its easily accessible
-	sed -i "" '$(shell echo 's/\#define PG_MAJORVERSION .*/'`grep "\#define PG_MAJORVERSION " ./src/postgres/include/pg_config.h`'/')' pg_query.h
-	sed -i "" '$(shell echo 's/\#define PG_VERSION .*/'`grep "\#define PG_VERSION " ./src/postgres/include/pg_config.h`'/')' pg_query.h
-	sed -i "" '$(shell echo 's/\#define PG_VERSION_NUM .*/'`grep "\#define PG_VERSION_NUM " ./src/postgres/include/pg_config.h`'/')' pg_query.h
+	sed -i "" '$(shell echo 's/\#define PG_MAJORVERSION .*/#define PG_MAJORVERSION "$(PG_VERSION_MAJOR)"/')' pg_query.h
+	sed -i "" '$(shell echo 's/\#define PG_VERSION .*/#define PG_VERSION "$(PG_VERSION)"/')' pg_query.h
+	sed -i "" '$(shell echo 's/\#define PG_VERSION_NUM .*/#define PG_VERSION_NUM $(PG_VERSION_NUM)/')' pg_query.h
 	# Copy regress SQL files so we can use them in tests
 	rm -f ./test/sql/postgres_regress/*.sql
+	rm -f ./test/sql/plpgsql_regress/*.sql
 	cp $(PGDIR)/src/test/regress/sql/*.sql ./test/sql/postgres_regress/
+	cp $(PGDIR)/src/pl/plpgsql/src/sql/*.sql ./test/sql/plpgsql_regress/
+	cp $(PGDIR)/COPYRIGHT ./src/postgres/
 
 .c.o:
 	@$(ECHO) compiling $(<)
@@ -227,16 +241,20 @@ examples/normalize_error: examples/normalize_error.c $(ARLIB)
 examples/simple_plpgsql: examples/simple_plpgsql.c $(ARLIB)
 	$(CC) $(TEST_CFLAGS) -o $@ -g examples/simple_plpgsql.c $(ARLIB) $(TEST_LDFLAGS)
 
-TESTS = test/complex test/concurrency test/deparse test/fingerprint test/normalize test/parse test/parse_protobuf test/parse_plpgsql test/scan test/split
+TESTS = test/complex test/concurrency test/deparse test/fingerprint test/fingerprint_opts test/normalize test/normalize_utility test/parse test/parse_opts test/parse_protobuf test/parse_protobuf_opts test/parse_plpgsql test/scan test/split
 test: $(TESTS)
 ifeq ($(VALGRIND),1)
 	$(VALGRIND_MEMCHECK) test/complex || (cat test/valgrind.log && false)
 	$(VALGRIND_MEMCHECK) test/concurrency || (cat test/valgrind.log && false)
 	$(VALGRIND_MEMCHECK) test/deparse || (cat test/valgrind.log && false)
 	$(VALGRIND_MEMCHECK) test/fingerprint || (cat test/valgrind.log && false)
+	$(VALGRIND_MEMCHECK) test/fingerprint_opts || (cat test/valgrind.log && false)
 	$(VALGRIND_MEMCHECK) test/normalize || (cat test/valgrind.log && false)
+	$(VALGRIND_MEMCHECK) test/normalize_utility || (cat test/valgrind.log && false)
 	$(VALGRIND_MEMCHECK) test/parse || (cat test/valgrind.log && false)
+	$(VALGRIND_MEMCHECK) test/parse_opts || (cat test/valgrind.log && false)
 	$(VALGRIND_MEMCHECK) test/parse_protobuf || (cat test/valgrind.log && false)
+	$(VALGRIND_MEMCHECK) test/parse_protobuf_opts || (cat test/valgrind.log && false)
 	$(VALGRIND_MEMCHECK) test/scan || (cat test/valgrind.log && false)
 	$(VALGRIND_MEMCHECK) test/split || (cat test/valgrind.log && false)
 	# Output-based tests
@@ -247,9 +265,13 @@ else
 	test/concurrency
 	test/deparse
 	test/fingerprint
+	test/fingerprint_opts
 	test/normalize
+	test/normalize_utility
 	test/parse
+	test/parse_opts
 	test/parse_protobuf
+	test/parse_protobuf_opts
 	test/scan
 	test/split
 	# Output-based tests
@@ -271,17 +293,30 @@ test/fingerprint: test/fingerprint.c test/fingerprint_tests.c $(ARLIB)
 	# We have "-Isrc/" because this test uses pg_query_fingerprint_with_opts
 	$(CC) $(TEST_CFLAGS) -o $@ -Isrc/ test/fingerprint.c $(ARLIB) $(TEST_LDFLAGS)
 
+test/fingerprint_opts: test/fingerprint_opts.c test/fingerprint_opts_tests.c $(ARLIB)
+	# We have "-Isrc/" because this test uses pg_query_fingerprint_with_opts
+	$(CC) $(TEST_CFLAGS) -o $@ -Isrc/ test/fingerprint_opts.c $(ARLIB) $(TEST_LDFLAGS)
+
 test/normalize: test/normalize.c test/normalize_tests.c $(ARLIB)
 	$(CC) $(TEST_CFLAGS) -o $@ test/normalize.c $(ARLIB) $(TEST_LDFLAGS)
 
+test/normalize_utility: test/normalize_utility.c test/normalize_utility_tests.c $(ARLIB)
+	$(CC) $(TEST_CFLAGS) -o $@ test/normalize_utility.c $(ARLIB) $(TEST_LDFLAGS)
+
 test/parse: test/parse.c test/parse_tests.c $(ARLIB)
 	$(CC) $(TEST_CFLAGS) -o $@ test/parse.c $(ARLIB) $(TEST_LDFLAGS)
+
+test/parse_opts: test/parse_opts.c test/parse_opts_tests.c $(ARLIB)
+	$(CC) $(TEST_CFLAGS) -o $@ test/parse_opts.c $(ARLIB) $(TEST_LDFLAGS)
 
 test/parse_plpgsql: test/parse_plpgsql.c test/parse_tests.c $(ARLIB)
 	$(CC) $(TEST_CFLAGS) -o $@ test/parse_plpgsql.c $(ARLIB) $(TEST_LDFLAGS)
 
 test/parse_protobuf: test/parse_protobuf.c test/parse_tests.c $(ARLIB)
 	$(CC) $(TEST_CFLAGS) -o $@ test/parse_protobuf.c $(ARLIB) $(TEST_LDFLAGS)
+
+test/parse_protobuf_opts: test/parse_protobuf_opts.c test/parse_opts_tests.c $(ARLIB)
+	$(CC) $(TEST_CFLAGS) -o $@ test/parse_protobuf_opts.c $(ARLIB) $(TEST_LDFLAGS)
 
 test/scan: test/scan.c test/scan_tests.c $(ARLIB)
 	$(CC) $(TEST_CFLAGS) -o $@ test/scan.c $(ARLIB) $(TEST_LDFLAGS)

@@ -8,7 +8,7 @@
  * relations need be included.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_attribute.h
@@ -36,7 +36,8 @@
  */
 CATALOG(pg_attribute,1249,AttributeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(75,AttributeRelation_Rowtype_Id) BKI_SCHEMA_MACRO
 {
-	Oid			attrelid;		/* OID of relation containing this attribute */
+	Oid			attrelid BKI_LOOKUP(pg_class);	/* OID of relation containing
+												 * this attribute */
 	NameData	attname;		/* name of attribute */
 
 	/*
@@ -44,18 +45,12 @@ CATALOG(pg_attribute,1249,AttributeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(75,
 	 * defines the data type of this attribute (e.g. int4).  Information in
 	 * that instance is redundant with the attlen, attbyval, and attalign
 	 * attributes of this instance, so they had better match or Postgres will
-	 * fail.
+	 * fail.  In an entry for a dropped column, this field is set to zero
+	 * since the pg_type entry may no longer exist; but we rely on attlen,
+	 * attbyval, and attalign to still tell us how large the values in the
+	 * table are.
 	 */
-	Oid			atttypid;
-
-	/*
-	 * attstattarget is the target number of statistics datapoints to collect
-	 * during VACUUM ANALYZE of this column.  A zero here indicates that we do
-	 * not wish to collect any stats about this column. A "-1" here indicates
-	 * that no value has been explicitly set for this column, so ANALYZE
-	 * should use the default setting.
-	 */
-	int32		attstattarget BKI_DEFAULT(-1);
+	Oid			atttypid BKI_LOOKUP_OPT(pg_type);
 
 	/*
 	 * attlen is a copy of the typlen field from pg_type for this attribute.
@@ -79,12 +74,6 @@ CATALOG(pg_attribute,1249,AttributeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(75,
 	int16		attnum;
 
 	/*
-	 * attndims is the declared number of dimensions, if an array type,
-	 * otherwise zero.
-	 */
-	int32		attndims;
-
-	/*
 	 * fastgetattr() uses attcacheoff to cache byte offsets of attributes in
 	 * heap tuples.  The value actually stored in pg_attribute (-1) indicates
 	 * no cached value.  But when we copy these tuples into a tuple
@@ -102,10 +91,22 @@ CATALOG(pg_attribute,1249,AttributeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(75,
 	int32		atttypmod BKI_DEFAULT(-1);
 
 	/*
+	 * attndims is the declared number of dimensions, if an array type,
+	 * otherwise zero.
+	 */
+	int16		attndims;
+
+	/*
 	 * attbyval is a copy of the typbyval field from pg_type for this
 	 * attribute.  See atttypid comments above.
 	 */
 	bool		attbyval;
+
+	/*
+	 * attalign is a copy of the typalign field from pg_type for this
+	 * attribute.  See atttypid comments above.
+	 */
+	char		attalign;
 
 	/*----------
 	 * attstorage tells for VARLENA attributes, what the heap access
@@ -116,10 +117,14 @@ CATALOG(pg_attribute,1249,AttributeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(75,
 	char		attstorage;
 
 	/*
-	 * attalign is a copy of the typalign field from pg_type for this
-	 * attribute.  See atttypid comments above.
+	 * attcompression sets the current compression method of the attribute.
+	 * Typically this is InvalidCompressionMethod ('\0') to specify use of the
+	 * current default setting (see default_toast_compression).  Otherwise,
+	 * 'p' selects pglz compression, while 'l' selects LZ4 compression.
+	 * However, this field is ignored whenever attstorage does not allow
+	 * compression.
 	 */
-	char		attalign;
+	char		attcompression BKI_DEFAULT('\0');
 
 	/* This flag represents the "NOT NULL" constraint */
 	bool		attnotnull;
@@ -151,13 +156,24 @@ CATALOG(pg_attribute,1249,AttributeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(75,
 	bool		attislocal BKI_DEFAULT(t);
 
 	/* Number of times inherited from direct parent relation(s) */
-	int32		attinhcount BKI_DEFAULT(0);
+	int16		attinhcount BKI_DEFAULT(0);
 
-	/* attribute's collation */
-	Oid			attcollation;
+	/* attribute's collation, if any */
+	Oid			attcollation BKI_LOOKUP_OPT(pg_collation);
 
-#ifdef CATALOG_VARLEN			/* variable-length fields start here */
+#ifdef CATALOG_VARLEN			/* variable-length/nullable fields start here */
 	/* NOTE: The following fields are not present in tuple descriptors. */
+
+	/*
+	 * attstattarget is the target number of statistics datapoints to collect
+	 * during VACUUM ANALYZE of this column.  A zero here indicates that we do
+	 * not wish to collect any stats about this column. A null value here
+	 * indicates that no value has been explicitly set for this column, so
+	 * ANALYZE should use the default setting.
+	 *
+	 * int16 is sufficient for the current max value (MAX_STATISTICS_TARGET).
+	 */
+	int16		attstattarget BKI_DEFAULT(_null_) BKI_FORCE_NULL;
 
 	/* Column-level access permissions */
 	aclitem		attacl[1] BKI_DEFAULT(_null_);
@@ -180,7 +196,7 @@ CATALOG(pg_attribute,1249,AttributeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(75,
  * ATTRIBUTE_FIXED_PART_SIZE is the size of the fixed-layout,
  * guaranteed-not-null part of a pg_attribute row.  This is in fact as much
  * of the row as gets copied into tuple descriptors, so don't expect you
- * can access fields beyond attcollation except in a real tuple!
+ * can access the variable-length fields except in a real tuple!
  */
 #define ATTRIBUTE_FIXED_PART_SIZE \
 	(offsetof(FormData_pg_attribute,attcollation) + sizeof(Oid))
@@ -191,6 +207,26 @@ CATALOG(pg_attribute,1249,AttributeRelationId) BKI_BOOTSTRAP BKI_ROWTYPE_OID(75,
  * ----------------
  */
 typedef FormData_pg_attribute *Form_pg_attribute;
+
+/*
+ * FormExtraData_pg_attribute contains (some of) the fields that are not in
+ * FormData_pg_attribute because they are excluded by CATALOG_VARLEN.  It is
+ * meant to be used by DDL code so that the combination of
+ * FormData_pg_attribute (often via tuple descriptor) and
+ * FormExtraData_pg_attribute can be used to pass around all the information
+ * about an attribute.  Fields can be included here as needed.
+ */
+typedef struct FormExtraData_pg_attribute
+{
+	NullableDatum attstattarget;
+	NullableDatum attoptions;
+} FormExtraData_pg_attribute;
+
+DECLARE_UNIQUE_INDEX(pg_attribute_relid_attnam_index, 2658, AttributeRelidNameIndexId, pg_attribute, btree(attrelid oid_ops, attname name_ops));
+DECLARE_UNIQUE_INDEX_PKEY(pg_attribute_relid_attnum_index, 2659, AttributeRelidNumIndexId, pg_attribute, btree(attrelid oid_ops, attnum int2_ops));
+
+MAKE_SYSCACHE(ATTNAME, pg_attribute_relid_attnam_index, 32);
+MAKE_SYSCACHE(ATTNUM, pg_attribute_relid_attnum_index, 128);
 
 #ifdef EXPOSE_TO_CLIENT_CODE
 

@@ -4,7 +4,7 @@
  *		Querytree manipulation subroutines for query rewriter.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/rewrite/rewriteManip.h
@@ -37,12 +37,14 @@ typedef enum ReplaceVarsNoMatchOption
 {
 	REPLACEVARS_REPORT_ERROR,	/* throw error if no match */
 	REPLACEVARS_CHANGE_VARNO,	/* change the Var's varno, nothing else */
-	REPLACEVARS_SUBSTITUTE_NULL /* replace with a NULL Const */
+	REPLACEVARS_SUBSTITUTE_NULL,	/* replace with a NULL Const */
 } ReplaceVarsNoMatchOption;
 
 
+extern void CombineRangeTables(List **dst_rtable, List **dst_perminfos,
+							   List *src_rtable, List *src_perminfos);
 extern void OffsetVarNodes(Node *node, int offset, int sublevels_up);
-extern void ChangeVarNodes(Node *node, int old_varno, int new_varno,
+extern void ChangeVarNodes(Node *node, int rt_index, int new_index,
 						   int sublevels_up);
 extern void IncrementVarSublevelsUp(Node *node, int delta_sublevels_up,
 									int min_sublevels_up);
@@ -62,6 +64,13 @@ extern int	locate_agg_of_level(Node *node, int levelsup);
 extern bool contain_windowfuncs(Node *node);
 extern int	locate_windowfunc(Node *node);
 extern bool checkExprHasSubLink(Node *node);
+
+extern Node *add_nulling_relids(Node *node,
+								const Bitmapset *target_relids,
+								const Bitmapset *added_relids);
+extern Node *remove_nulling_relids(Node *node,
+								   const Bitmapset *removable_relids,
+								   const Bitmapset *except_relids);
 
 extern Node *replace_rte_variables(Node *node,
 								   int target_varno, int sublevels_up,

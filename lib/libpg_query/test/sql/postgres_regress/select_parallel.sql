@@ -5,9 +5,7 @@
 create function sp_parallel_restricted(int) returns int as
   $$begin return $1; end$$ language plpgsql parallel restricted;
 
--- Serializable isolation would disable parallel query, so explicitly use an
--- arbitrary other level.
-begin isolation level repeatable read;
+begin;
 
 -- encourage use of parallel plans
 set parallel_setup_cost=0;
@@ -139,10 +137,18 @@ alter table tenk2 reset (parallel_workers);
 -- test parallel index scans.
 set enable_seqscan to off;
 set enable_bitmapscan to off;
+set random_page_cost = 2;
 
 explain (costs off)
 	select  count((unique1)) from tenk1 where hundred > 1;
 select  count((unique1)) from tenk1 where hundred > 1;
+
+-- Parallel ScalarArrayOp index scan
+explain (costs off)
+  select count((unique1)) from tenk1
+  where hundred = any ((select array_agg(i) from generate_series(1, 100, 15) i)::int[]);
+select count((unique1)) from tenk1
+where hundred = any ((select array_agg(i) from generate_series(1, 100, 15) i)::int[]);
 
 -- test parallel index-only scans.
 explain (costs off)
@@ -345,8 +351,34 @@ select string4 from tenk1 order by string4 limit 5;
 reset parallel_leader_participation;
 reset max_parallel_workers;
 
+create function parallel_safe_volatile(a int) returns int as
+  $$ begin return a; end; $$ parallel safe volatile language plpgsql;
+
+-- Test gather merge atop of a sort of a partial path
+explain (costs off)
+select * from tenk1 where four = 2
+order by four, hundred, parallel_safe_volatile(thousand);
+
+-- Test gather merge atop of an incremental sort a of partial path
+set min_parallel_index_scan_size = 0;
+set enable_seqscan = off;
+
+explain (costs off)
+select * from tenk1 where four = 2
+order by four, hundred, parallel_safe_volatile(thousand);
+
+reset min_parallel_index_scan_size;
+reset enable_seqscan;
+
+-- Test GROUP BY with a gather merge path atop of a sort of a partial path
+explain (costs off)
+select count(*) from tenk1
+group by twenty, parallel_safe_volatile(two);
+
+drop function parallel_safe_volatile(int);
+
 SAVEPOINT settings;
-SET LOCAL force_parallel_mode = 1;
+SET LOCAL debug_parallel_query = 1;
 explain (costs off)
   select stringu1::int2 from tenk1 where unique1 = 1;
 ROLLBACK TO SAVEPOINT settings;
@@ -366,7 +398,7 @@ BEGIN
 END;
 $$;
 SAVEPOINT settings;
-SET LOCAL force_parallel_mode = 1;
+SET LOCAL debug_parallel_query = 1;
 SELECT make_record(x) FROM (SELECT generate_series(1, 5) x) ss ORDER BY x;
 ROLLBACK TO SAVEPOINT settings;
 DROP function make_record(n int);
@@ -377,9 +409,9 @@ create role regress_parallel_worker;
 set role regress_parallel_worker;
 reset session authorization;
 drop role regress_parallel_worker;
-set force_parallel_mode = 1;
+set debug_parallel_query = 1;
 select count(*) from tenk1;
-reset force_parallel_mode;
+reset debug_parallel_query;
 reset role;
 
 -- Window function calculation can't be pushed to workers.
@@ -395,14 +427,14 @@ explain (costs off)
 
 -- to increase the parallel query test coverage
 SAVEPOINT settings;
-SET LOCAL force_parallel_mode = 1;
+SET LOCAL debug_parallel_query = 1;
 EXPLAIN (analyze, timing off, summary off, costs off) SELECT * FROM tenk1;
 ROLLBACK TO SAVEPOINT settings;
 
 -- provoke error in worker
 -- (make the error message long enough to require multiple bufferloads)
 SAVEPOINT settings;
-SET LOCAL force_parallel_mode = 1;
+SET LOCAL debug_parallel_query = 1;
 select (stringu1 || repeat('abcd', 5000))::int2 from tenk1 where unique1 = 1;
 ROLLBACK TO SAVEPOINT settings;
 
@@ -464,3 +496,57 @@ SELECT 1 FROM tenk1_vw_sec
   WHERE (SELECT sum(f1) FROM int4_tbl WHERE f1 < unique1) < 100;
 
 rollback;
+
+-- test that function option SET ROLE works in parallel workers.
+create role regress_parallel_worker;
+
+create function set_and_report_role() returns text as
+  $$ select current_setting('role') $$ language sql parallel safe
+  set role = regress_parallel_worker;
+
+create function set_role_and_error(int) returns int as
+  $$ select 1 / $1 $$ language sql parallel safe
+  set role = regress_parallel_worker;
+
+set debug_parallel_query = 0;
+select set_and_report_role();
+select set_role_and_error(0);
+set debug_parallel_query = 1;
+select set_and_report_role();
+select set_role_and_error(0);
+reset debug_parallel_query;
+
+drop function set_and_report_role();
+drop function set_role_and_error(int);
+drop role regress_parallel_worker;
+
+-- don't freeze in ParallelFinish while holding an LWLock
+BEGIN;
+
+CREATE FUNCTION my_cmp (int4, int4)
+RETURNS int LANGUAGE sql AS
+$$
+	SELECT
+		CASE WHEN $1 < $2 THEN -1
+				WHEN $1 > $2 THEN  1
+				ELSE 0
+		END;
+$$;
+
+CREATE TABLE parallel_hang (i int4);
+INSERT INTO parallel_hang
+	(SELECT * FROM generate_series(1, 400) gs);
+
+CREATE OPERATOR CLASS int4_custom_ops FOR TYPE int4 USING btree AS
+	OPERATOR 1 < (int4, int4), OPERATOR 2 <= (int4, int4),
+	OPERATOR 3 = (int4, int4), OPERATOR 4 >= (int4, int4),
+	OPERATOR 5 > (int4, int4), FUNCTION 1 my_cmp(int4, int4);
+
+CREATE UNIQUE INDEX parallel_hang_idx
+					ON parallel_hang
+					USING btree (i int4_custom_ops);
+
+SET debug_parallel_query = on;
+DELETE FROM parallel_hang WHERE 380 <= i AND i <= 420;
+
+ROLLBACK;

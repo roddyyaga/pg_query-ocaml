@@ -36,7 +36,7 @@
  * to look like NO SCROLL cursors.
  *
  *
- * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2024, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/portal.h
@@ -64,9 +64,9 @@
  * supports holdable cursors (the Executor results can be dumped into a
  * tuplestore for access after transaction completion).
  *
- * PORTAL_ONE_RETURNING: the portal contains a single INSERT/UPDATE/DELETE
- * query with a RETURNING clause (plus possibly auxiliary queries added by
- * rule rewriting).  On first execution, we run the portal to completion
+ * PORTAL_ONE_RETURNING: the portal contains a single INSERT/UPDATE/DELETE/
+ * MERGE query with a RETURNING clause (plus possibly auxiliary queries added
+ * by rule rewriting).  On first execution, we run the portal to completion
  * and dump the primary query's results into the portal tuplestore; the
  * results are then returned to the client as demanded.  (We can't support
  * suspension of the query partway through, because the AFTER TRIGGER code
@@ -92,7 +92,7 @@ typedef enum PortalStrategy
 	PORTAL_ONE_RETURNING,
 	PORTAL_ONE_MOD_WITH,
 	PORTAL_UTIL_SELECT,
-	PORTAL_MULTI_QUERY
+	PORTAL_MULTI_QUERY,
 } PortalStrategy;
 
 /*
@@ -107,7 +107,7 @@ typedef enum PortalStatus
 	PORTAL_READY,				/* PortalStart complete, can run it */
 	PORTAL_ACTIVE,				/* portal is running (can't delete it) */
 	PORTAL_DONE,				/* portal is finished (don't re-run it) */
-	PORTAL_FAILED				/* portal got error (can't re-run it) */
+	PORTAL_FAILED,				/* portal got error (can't re-run it) */
 } PortalStatus;
 
 typedef struct PortalData *Portal;
@@ -130,6 +130,7 @@ typedef struct PortalData
 	 */
 	SubTransactionId createSubid;	/* the creating subxact */
 	SubTransactionId activeSubid;	/* the last subxact with activity */
+	int			createLevel;	/* creating subxact's nesting level */
 
 	/* The query or queries the portal will execute */
 	const char *sourceText;		/* text of query (as of 8.4, never NULL) */
@@ -144,7 +145,7 @@ typedef struct PortalData
 	/* Features/options */
 	PortalStrategy strategy;	/* see above */
 	int			cursorOptions;	/* DECLARE CURSOR option bits */
-	bool		run_once;		/* portal will only be run once */
+	bool		run_once;		/* unused */
 
 	/* Status data */
 	PortalStatus status;		/* see above */
@@ -161,9 +162,17 @@ typedef struct PortalData
 	int16	   *formats;		/* a format code for each column */
 
 	/*
-	 * Where we store tuples for a held cursor or a PORTAL_ONE_RETURNING or
-	 * PORTAL_UTIL_SELECT query.  (A cursor held past the end of its
-	 * transaction no longer has any active executor state.)
+	 * Outermost ActiveSnapshot for execution of the portal's queries.  For
+	 * all but a few utility commands, we require such a snapshot to exist.
+	 * This ensures that TOAST references in query results can be detoasted,
+	 * and helps to reduce thrashing of the process's exposed xmin.
+	 */
+	Snapshot	portalSnapshot; /* active snapshot, or NULL if none */
+
+	/*
+	 * Where we store tuples for a held cursor or a PORTAL_ONE_RETURNING,
+	 * PORTAL_ONE_MOD_WITH, or PORTAL_UTIL_SELECT query.  (A cursor held past
+	 * the end of its transaction no longer has any active executor state.)
 	 */
 	Tuplestorestate *holdStore; /* store for holdable cursors */
 	MemoryContext holdContext;	/* memory containing holdStore */
@@ -194,17 +203,6 @@ typedef struct PortalData
 	/* Presentation data, primarily used by the pg_cursors system view */
 	TimestampTz creation_time;	/* time at which this portal was defined */
 	bool		visible;		/* include this portal in pg_cursors? */
-
-	/* Stuff added at the end to avoid ABI break in stable branches: */
-
-	/*
-	 * Outermost ActiveSnapshot for execution of the portal's queries.  For
-	 * all but a few utility commands, we require such a snapshot to exist.
-	 * This ensures that TOAST references in query results can be detoasted,
-	 * and helps to reduce thrashing of the process's exposed xmin.
-	 */
-	Snapshot	portalSnapshot; /* active snapshot, or NULL if none */
-	int			createLevel;	/* creating subxact's nesting level */
 }			PortalData;
 
 /*
